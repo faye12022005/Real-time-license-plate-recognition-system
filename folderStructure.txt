@@ -1,0 +1,49 @@
+alpr-realtime-system/
+│
+├── config/                     # Cấu hình hệ thống
+│   ├── settings.py             # Tham số cấu hình (camera RTSP, ngưỡng YOLO, DB info)
+│   └── camera_config.json      # Danh sách camera IP và vùng ROI
+│
+├── data/                       # Quản lý dữ liệu cục bộ
+│   ├── models/                 # Chứa các file trọng số AI
+│   │   ├── plate_detection.pt  # Mô hình YOLOv8 phát hiện biển số (.pt / .onnx / .engine)
+│   │   └── ocr_model.onnx      # Mô hình OCR nhận diện ký tự
+│   ├── captures/               # Lưu ảnh chụp biển số/xe khi có sự kiện (theo ngày)
+│   └── sample_videos/          # Video dùng để test offline
+│
+├── src/                        # Mã nguồn chính của ứng dụng
+│   ├── __init__.py
+│   ├── core/                   # Các luồng xử lý AI cốt lõi
+│   │   ├── __init__.py
+│   │   ├── detector.py         # Module load YOLO, crop vùng biển số (ROI)
+│   │   ├── ocr.py              # Module đọc ký tự (EasyOCR / PaddleOCR)
+│   │   └── tracker.py          # Module theo dõi vết xe (ByteTrack / DeepSORT)
+│   │
+│   ├── pipeline/               # Luồng xử lý đa luồng (Multi-threading)
+│   │   ├── __init__.py
+│   │   ├── stream_reader.py    # Đọc luồng RTSP camera ở thread riêng (tránh drop frame)
+│   │   └── alpr_pipeline.py    # Kết nối Reader -> Detector -> OCR -> Tracker
+│   │
+│   ├── utils/                  # Thư viện tiện ích phụ trợ
+│   │   ├── __init__.py
+│   │   ├── image_processing.py # Tiền xử lý ảnh (xoay, xoay nghiêng, tăng tương phản)
+│   │   ├── plate_validator.py  # Regex kiểm tra/định dạng chuẩn biển số VN
+│   │   └── logger.py           # Ghi log hoạt động và lỗi
+│   │
+│   └── database/               # Tương tác với CSDL
+│       ├── __init__.py
+│       ├── connection.py       # Kết nối PostgreSQL / MySQL / SQLite
+│       └── repository.py       # CRUD lưu lịch sử xe ra/vào
+│
+├── api/                        # (Tùy chọn) REST API / WebSocket cho Frontend
+│   ├── app.py                  # Server FastAPI / Flask
+│   └── routes/                 # Điều hướng API
+│
+├── tests/                      # Thử nghiệm và kiểm thử
+│   ├── test_detector.py        # Test riêng độ chính xác YOLO
+│   └── test_ocr.py             # Test riêng độ chính xác OCR
+│
+├── main.py                     # Entry point chính chạy chương trình
+├── requirements.txt            # Khai báo các thư viện Python
+├── Dockerfile                  # Đóng gói ứng dụng chạy Container
+└── README.md                   # Hướng dẫn cài đặt & vận hành
