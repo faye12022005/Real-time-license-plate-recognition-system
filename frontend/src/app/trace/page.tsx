@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import Image from "next/image";
+import { SafePlateImage } from "@/components/shared/SafePlateImage";
 import { alprApi } from "@/lib/api";
 import { PlateRecord, PlateTraceSummary } from "@/types";
 import { PlateBadge, VehicleBadge } from "@/components/shared/Badge";
@@ -136,12 +136,11 @@ function TraceContent() {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border/80">
                   <div className="flex items-center gap-4">
                     <div className="relative w-20 h-12 rounded-xl overflow-hidden border border-slate-300 bg-slate-200 shrink-0 shadow-2xs">
-                      <Image
+                      <SafePlateImage
                         src={selectedSummary.best_crop_image_url}
                         alt={selectedSummary.plate_number}
-                        fill
+                        plateNumber={selectedSummary.plate_display}
                         className="object-cover"
-                        unoptimized
                       />
                     </div>
                     <div>

@@ -29,7 +29,13 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
-export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJob) => void }) {
+export function VideoUploadZone({
+  onJobCreated,
+  onJobUpdated,
+}: {
+  onJobCreated?: (job: VideoJob) => void;
+  onJobUpdated?: (jobId: string, updates: Partial<VideoJob>) => void;
+}) {
   const [isDragging, setIsDragging] = useState(false);
   const [queue, setQueue] = useState<UploadQueueItem[]>([]);
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -203,6 +209,17 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
             clearInterval(interval);
             delete simulationIntervalsRef.current[item.id];
             processingIdsRef.current.delete(item.id);
+
+            if (onJobUpdated && res.job_id) {
+              onJobUpdated(res.job_id, {
+                stage: "COMPLETED",
+                overall_progress_pct: 100,
+                processed_frames: 3600,
+                eta_seconds: 0,
+                detected_plates_count: 26,
+              });
+            }
+
             setQueue((prev) =>
               prev.map((q) =>
                 q.id === item.id
@@ -217,6 +234,15 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
               )
             );
           } else {
+            if (onJobUpdated && res.job_id) {
+              onJobUpdated(res.job_id, {
+                overall_progress_pct: currentPct,
+                processed_frames: Math.floor((3600 * currentPct) / 100),
+                eta_seconds: Math.max(0, Math.floor((100 - currentPct) * 0.7)),
+                detected_plates_count: Math.floor(currentPct * 0.35),
+              });
+            }
+
             setQueue((prev) =>
               prev.map((q) =>
                 q.id === item.id
@@ -249,7 +275,7 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
         delete abortControllersRef.current[item.id];
       }
     },
-    [onJobCreated]
+    [onJobCreated, onJobUpdated]
   );
 
   // 5. Queue Worker Loop: Tự động bốc tệp tiếp theo khi có vị trí trống

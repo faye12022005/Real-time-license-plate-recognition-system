@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import Image from "next/image";
 import Link from "next/link";
+import { SafePlateImage } from "@/components/shared/SafePlateImage";
 import { alprApi, setMockEnabled } from "@/lib/api";
 import { PlateRecord, VehicleType } from "@/types";
 import { PlateBadge, VehicleBadge } from "@/components/shared/Badge";
@@ -120,12 +120,11 @@ export default function PlatesDatabasePage() {
                     {/* Ảnh crop */}
                     <td className="py-3 px-4">
                       <div className="relative w-16 h-10 rounded-lg overflow-hidden border border-slate-300 bg-slate-200">
-                        <Image
+                        <SafePlateImage
                           src={plate.crop_image_url}
                           alt={plate.plate_number}
-                          fill
+                          plateNumber={plate.plate_display}
                           className="object-cover"
-                          unoptimized
                         />
                       </div>
                     </td>

@@ -14,8 +14,9 @@ import {
   Sparkles,
   ToggleLeft,
   ToggleRight,
+  AlertTriangle,
 } from "lucide-react";
-import { isMockEnabled, setMockEnabled } from "@/lib/api";
+import { isMockEnabled, setMockEnabled, apiClient } from "@/lib/api";
 
 const NAV_ITEMS = [
   {
@@ -47,9 +48,24 @@ const NAV_ITEMS = [
 export function Sidebar() {
   const pathname = usePathname();
   const [mockActive, setMockActive] = useState<boolean>(false);
+  const [engineStatus, setEngineStatus] = useState<"mock" | "online" | "offline">("online");
 
   useEffect(() => {
-    setMockActive(isMockEnabled());
+    const isMock = isMockEnabled();
+    setMockActive(isMock);
+    if (isMock) {
+      setEngineStatus("mock");
+    } else {
+      // Kiểm tra tín hiệu thực tế từ Backend FastAPI
+      apiClient
+        .get("/analytics/kpis")
+        .then(() => setEngineStatus("online"))
+        .catch(() => setEngineStatus("offline"));
+
+      const handleApiError = () => setEngineStatus("offline");
+      window.addEventListener("alpr_api_error", handleApiError);
+      return () => window.removeEventListener("alpr_api_error", handleApiError);
+    }
   }, []);
 
   const handleToggleMock = () => {
@@ -158,16 +174,42 @@ export function Sidebar() {
           </button>
         </div>
 
-        {/* System Health Card */}
+        {/* System Health Card (Trạng thái động thực tế) */}
         <div className="p-3 rounded-xl bg-surface-muted border border-border flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-2.5 h-2.5 rounded-full bg-status-success animate-tech-pulse" />
+            <div
+              className={`w-2.5 h-2.5 rounded-full ${
+                engineStatus === "online"
+                  ? "bg-status-success animate-tech-pulse"
+                  : engineStatus === "mock"
+                  ? "bg-primary animate-pulse"
+                  : "bg-status-error"
+              }`}
+            />
             <div>
-              <p className="text-[11px] font-bold text-content-primary">AI Engine Online</p>
-              <p className="text-[10px] text-content-muted">FastAPI + OpenVINO Ready</p>
+              <p className="text-[11px] font-bold text-content-primary">
+                {engineStatus === "online"
+                  ? "AI Engine Online"
+                  : engineStatus === "mock"
+                  ? "Chế độ Mock Data"
+                  : "Backend Mất kết nối"}
+              </p>
+              <p className="text-[10px] text-content-muted">
+                {engineStatus === "online"
+                  ? "FastAPI Hub Connected"
+                  : engineStatus === "mock"
+                  ? "Mô phỏng độc lập"
+                  : "Cổng 8000 không phản hồi"}
+              </p>
             </div>
           </div>
-          <ShieldCheck className="w-4 h-4 text-status-success" />
+          {engineStatus === "online" ? (
+            <ShieldCheck className="w-4 h-4 text-status-success" />
+          ) : engineStatus === "mock" ? (
+            <Sparkles className="w-4 h-4 text-primary" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-status-error" />
+          )}
         </div>
 
         {/* User Account Info */}

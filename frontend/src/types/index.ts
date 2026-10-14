@@ -54,6 +54,7 @@ export interface PlateRecord {
   video_time_str: string;      // Định dạng phút:giây (VD: "01:24")
   timestamp: string;           // Thời điểm phát hiện (ISO 8601)
   speed_kmh?: number;          // Vận tốc ước tính (km/h)
+  video_url?: string;          // URL video nguồn phát bằng chứng
 }
 
 // Bản ghi kết quả Truy vết Biển số (Vehicle Trace Profile)

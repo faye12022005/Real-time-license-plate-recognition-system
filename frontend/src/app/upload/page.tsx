@@ -6,14 +6,26 @@ import { VideoJob } from "@/types";
 import { RealtimeVideoScanner } from "@/components/video/RealtimeVideoScanner";
 import { VideoUploadZone } from "@/components/upload/VideoUploadZone";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Film, CheckCircle2, Clock, AlertTriangle, Play, FileVideo } from "lucide-react";
+import { Film, CheckCircle2, Clock, AlertTriangle, Play, FileVideo, RotateCcw } from "lucide-react";
 
 export default function UploadPage() {
   const [jobs, setJobs] = useState<VideoJob[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const fetchJobs = () => {
+    setIsRefreshing(true);
+    alprApi.getJobs().then(setJobs).finally(() => setIsRefreshing(false));
+  };
 
   useEffect(() => {
-    alprApi.getJobs().then(setJobs);
+    fetchJobs();
   }, []);
+
+  const handleJobUpdated = (jobId: string, updates: Partial<VideoJob>) => {
+    setJobs((prev) =>
+      prev.map((job) => (job.id === jobId ? { ...job, ...updates } : job))
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -40,7 +52,10 @@ export default function UploadPage() {
             Kéo thả một hoặc nhiều tệp video cùng lúc. Hệ thống tự động kiểm tra lỗi và xếp hàng đợi xử lý tuần tự.
           </p>
         </div>
-        <VideoUploadZone onJobCreated={(newJob) => setJobs((prev) => [newJob, ...prev])} />
+        <VideoUploadZone
+          onJobCreated={(newJob) => setJobs((prev) => [newJob, ...prev])}
+          onJobUpdated={handleJobUpdated}
+        />
       </div>
 
       {/* Jobs History Table Bento Card */}
@@ -54,9 +69,18 @@ export default function UploadPage() {
               Danh sách video đã được AI quét và nhận diện biển số
             </p>
           </div>
-          <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-surface-muted text-content-secondary border border-border">
-            {jobs.length} tác vụ
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchJobs}
+              className="p-1.5 rounded-lg text-content-muted hover:text-content-primary hover:bg-surface-muted transition-colors"
+              title="Làm mới lịch sử"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-primary" : ""}`} />
+            </button>
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-surface-muted text-content-secondary border border-border">
+              {jobs.length} tác vụ
+            </span>
+          </div>
         </div>
 
         {jobs.length > 0 ? (

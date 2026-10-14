@@ -1,8 +1,8 @@
 "use client";
 
 import React from "react";
-import Image from "next/image";
 import Link from "next/link";
+import { SafePlateImage } from "@/components/shared/SafePlateImage";
 import { PlateRecord } from "@/types";
 import { PlateBadge, VehicleBadge } from "@/components/shared/Badge";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -41,12 +41,11 @@ export function RecentPlatesBento({ plates }: { plates: PlateRecord[] }) {
               {/* Left: Crop Image & Plate Details */}
               <div className="flex items-center gap-3">
                 <div className="relative w-14 h-9 rounded-lg overflow-hidden border border-slate-300 bg-slate-200 shrink-0">
-                  <Image
+                  <SafePlateImage
                     src={plate.crop_image_url}
                     alt={plate.plate_number}
-                    fill
+                    plateNumber={plate.plate_display}
                     className="object-cover group-hover:scale-105 transition-transform"
-                    unoptimized
                   />
                 </div>
 
