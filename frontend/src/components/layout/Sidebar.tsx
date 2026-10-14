@@ -25,13 +25,13 @@ const NAV_ITEMS = [
     badge: null,
   },
   {
-    name: "Tải lên & Xử lý Video",
+    name: "Upload & Xử lý",
     href: "/upload",
     icon: UploadCloud,
     badge: "AI 2.0",
   },
   {
-    name: "Kho Biển số (Database)",
+    name: "Biển số",
     href: "/plates",
     icon: Database,
     badge: null,

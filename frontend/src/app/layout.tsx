@@ -3,7 +3,7 @@ import "./globals.css";
 import { Sidebar } from "@/components/layout/Sidebar";
 
 export const metadata: Metadata = {
-  title: "Smart ALPR 2.0 — Bright Tech Bento Management",
+  title: "Smart ALPR 2.0 — Thống kê & Truy vết biển số",
   description: "Hệ thống nhận diện và truy vết biển số xe qua video sử dụng AI & Bento Grid UI",
 };
 
