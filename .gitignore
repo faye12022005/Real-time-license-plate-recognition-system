@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Frontend & Node
+node_modules/
+.next/
+out/
+.env*.local
+
+# Data storage (keep .gitkeep)
+data/captures/*
+!data/captures/.gitkeep
+data/models/*
+!data/models/.gitkeep
+data/sample_videos/*
+!data/sample_videos/.gitkeep
+
+# IDEs & System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# OpenCode & local scripts
+.opencode/
+powershell.cmd
