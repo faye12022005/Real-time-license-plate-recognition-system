@@ -20,7 +20,7 @@ export default function UploadPage() {
       {/* Header */}
       <div>
         <h1 className="font-heading font-black text-2xl text-content-primary tracking-tight">
-          Tải lên & Xử lý Video Thời gian thực
+          Upload & Xử lý
         </h1>
         <p className="text-xs text-content-muted mt-1">
           Tải lên video camera giao thông để hệ thống tự động bóc tách tất cả biển số xe và nạp vào cơ sở dữ liệu

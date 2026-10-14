@@ -36,10 +36,10 @@ export default function PlatesDatabasePage() {
       {/* Header */}
       <div>
         <h1 className="font-heading font-black text-2xl text-content-primary tracking-tight">
-          Kho Biển số Nhận diện (Database)
+          Biển số
         </h1>
         <p className="text-xs text-content-muted mt-1">
-          Toàn bộ biển số xe được hệ thống AI trích xuất tự động từ video và lưu trữ vào cơ sở dữ liệu
+          Toàn bộ biển số xe đã nhận diện từ video
         </p>
       </div>
 

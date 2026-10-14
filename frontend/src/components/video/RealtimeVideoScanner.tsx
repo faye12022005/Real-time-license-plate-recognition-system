@@ -132,21 +132,37 @@ export function RealtimeVideoScanner() {
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [isMuted, setIsMuted] = useState<boolean>(true);
   const [detectedPlates, setDetectedPlates] = useState<PlateRecord[]>([]);
-  const [activeTracksOnScreen, setActiveTracksOnScreen] = useState<SimulatedTrack[]>([]);
   const [lastScannedPlate, setLastScannedPlate] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const detectedPlateNumbersRef = useRef<Set<string>>(new Set());
+
+  // Thu hồi Object URL khi unmount để chống rò rỉ bộ nhớ RAM
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+      }
+    };
+  }, []);
 
   // Xử lý upload file video từ máy người dùng
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+      }
       const objectUrl = URL.createObjectURL(file);
+      objectUrlRef.current = objectUrl;
+
       setVideoSrc(objectUrl);
       setVideoFileName(file.name);
       setDetectedPlates([]);
+      detectedPlateNumbersRef.current.clear();
       setCurrentTime(0);
       setIsPlaying(false);
       if (videoRef.current) {
@@ -157,9 +173,14 @@ export function RealtimeVideoScanner() {
 
   // Nạp lại video demo mẫu
   const handleLoadDemo = () => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
     setVideoSrc(DEFAULT_DEMO_VIDEO);
     setVideoFileName("nga_tu_hang_xanh_peak_traffic.mp4");
     setDetectedPlates([]);
+    detectedPlateNumbersRef.current.clear();
     setCurrentTime(0);
     setIsPlaying(false);
     if (videoRef.current) {
@@ -183,12 +204,14 @@ export function RealtimeVideoScanner() {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
     }
+    renderOverlay();
   };
 
   const jumpToTime = (targetSeconds: number) => {
     if (!videoRef.current) return;
     videoRef.current.currentTime = targetSeconds;
     setCurrentTime(targetSeconds);
+    renderOverlay();
     if (!isPlaying) {
       videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
     }
@@ -202,12 +225,13 @@ export function RealtimeVideoScanner() {
   };
 
   const formatTime = (secs: number) => {
+    if (isNaN(secs) || !isFinite(secs) || secs < 0) return "00:00";
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
 
-  // Vẽ Canvas Bounding Box thời gian thực khi video phát
+  // Vẽ Canvas Bounding Box thời gian thực khi video phát (không gọi setState liên tục)
   const renderOverlay = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -221,44 +245,43 @@ export function RealtimeVideoScanner() {
     ctx.clearRect(0, 0, width, height);
 
     const time = video.currentTime;
-    setCurrentTime(time);
 
     // Tìm các xe đang hiện diện tại giây 'time'
     const visibleTracks = TIMELINE_TRACKS.filter(
       (trk) => time >= trk.startSec && time <= trk.endSec
     );
-    setActiveTracksOnScreen(visibleTracks);
 
-    // Cập nhật danh sách biển số đã nhận diện được tính đến thời điểm này
-    TIMELINE_TRACKS.forEach((trk) => {
-      if (time >= trk.startSec) {
-        setDetectedPlates((prev) => {
-          if (!prev.some((p) => p.plate_number === trk.plate_number)) {
-            setLastScannedPlate(trk.plate_display);
-            const newRecord: PlateRecord = {
-              id: `live-${trk.id}-${Date.now()}`,
-              job_id: "current-video-job",
-              job_filename: videoFileName,
-              track_id: parseInt(trk.id.replace("trk-", "")) * 100,
-              plate_number: trk.plate_number,
-              plate_display: trk.plate_display,
-              province: trk.province,
-              plate_type: trk.vehicle_type === "truck" || trk.vehicle_type === "bus" ? "yellow" : "white",
-              vehicle_type: trk.vehicle_type,
-              confidence_score: trk.confidence,
-              quality_score: 0.94,
-              crop_image_url: trk.crop_image_url,
-              pts_ms: Math.floor(trk.startSec * 1000),
-              video_time_str: formatTime(trk.startSec),
-              timestamp: new Date().toISOString(),
-              speed_kmh: trk.speed,
-            };
-            return [newRecord, ...prev];
-          }
-          return prev;
-        });
-      }
-    });
+    // Cập nhật danh sách biển số mới phát hiện (chỉ kích hoạt setState khi có biển mới)
+    const newlyDetected = TIMELINE_TRACKS.filter(
+      (trk) => time >= trk.startSec && !detectedPlateNumbersRef.current.has(trk.plate_number)
+    );
+
+    if (newlyDetected.length > 0) {
+      newlyDetected.forEach((trk) => detectedPlateNumbersRef.current.add(trk.plate_number));
+      const latest = newlyDetected[newlyDetected.length - 1];
+      setLastScannedPlate(latest.plate_display);
+
+      const newRecords: PlateRecord[] = newlyDetected.map((trk) => ({
+        id: `live-${trk.id}-${Date.now()}`,
+        job_id: "current-video-job",
+        job_filename: videoFileName,
+        track_id: parseInt(trk.id.replace("trk-", "")) * 100,
+        plate_number: trk.plate_number,
+        plate_display: trk.plate_display,
+        province: trk.province,
+        plate_type: trk.vehicle_type === "truck" || trk.vehicle_type === "bus" ? "yellow" : "white",
+        vehicle_type: trk.vehicle_type,
+        confidence_score: trk.confidence,
+        quality_score: 0.94,
+        crop_image_url: trk.crop_image_url,
+        pts_ms: Math.floor(trk.startSec * 1000),
+        video_time_str: formatTime(trk.startSec),
+        timestamp: new Date().toISOString(),
+        speed_kmh: trk.speed,
+      }));
+
+      setDetectedPlates((prev) => [...newRecords, ...prev]);
+    }
 
     // Vẽ từng Bounding Box & HUD lên Canvas
     visibleTracks.forEach((trk) => {
@@ -349,16 +372,23 @@ export function RealtimeVideoScanner() {
     });
   }, [videoFileName]);
 
-  // Vòng lặp render liên tục khi video đang chạy
+  // Vòng lặp render canvas: chỉ chạy liên tục 60 FPS khi video đang PLAYING
   useEffect(() => {
     let animId: number;
-    const loop = () => {
-      renderOverlay();
+    if (isPlaying) {
+      const loop = () => {
+        renderOverlay();
+        animId = requestAnimationFrame(loop);
+      };
       animId = requestAnimationFrame(loop);
+    } else {
+      // Khi tạm dừng hoặc nạp video mới: vẽ 1 lần duy nhất để giữ bounding box tại frame hiện tại
+      renderOverlay();
+    }
+    return () => {
+      if (animId) cancelAnimationFrame(animId);
     };
-    animId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(animId);
-  }, [renderOverlay]);
+  }, [isPlaying, renderOverlay]);
 
   // Cập nhật kích thước canvas theo video
   useEffect(() => {
@@ -366,12 +396,13 @@ export function RealtimeVideoScanner() {
       if (videoRef.current && canvasRef.current) {
         canvasRef.current.width = videoRef.current.clientWidth;
         canvasRef.current.height = videoRef.current.clientHeight;
+        renderOverlay();
       }
     };
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, []);
+  }, [renderOverlay]);
 
   return (
     <div className="bg-surface border border-border rounded-bento p-5 lg:p-6 shadow-bento space-y-5">
@@ -434,13 +465,21 @@ export function RealtimeVideoScanner() {
                   src={videoSrc}
                   muted={isMuted}
                   playsInline
+                  crossOrigin="anonymous"
+                  onTimeUpdate={() => {
+                    if (videoRef.current) {
+                      setCurrentTime(videoRef.current.currentTime);
+                    }
+                  }}
                   onLoadedMetadata={() => {
                     if (videoRef.current) {
-                      setDuration(videoRef.current.duration || 45);
+                      const d = videoRef.current.duration;
+                      setDuration(Number.isFinite(d) && d > 0 ? d : 45);
                       if (canvasRef.current) {
-                        canvasRef.current.width = videoRef.current.clientWidth;
-                        canvasRef.current.height = videoRef.current.clientHeight;
+                        canvasRef.current.width = videoRef.current.clientWidth || 800;
+                        canvasRef.current.height = videoRef.current.clientHeight || 450;
                       }
+                      renderOverlay();
                     }
                   }}
                   onEnded={() => setIsPlaying(false)}

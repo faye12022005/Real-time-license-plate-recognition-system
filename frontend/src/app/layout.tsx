@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { NetworkStatusBanner } from "@/components/shared/NetworkStatusBanner";
 
 export const metadata: Metadata = {
   title: "Smart ALPR 2.0 — Thống kê & Truy vết biển số",
@@ -21,6 +22,7 @@ export default function RootLayout({
         {/* Content Workspace (Không header dư thừa, tối đa hóa không gian trải nghiệm) */}
         <div className="flex-1 flex flex-col min-w-0 min-h-screen">
           <main className="flex-1 p-6 lg:p-8 max-w-[1440px] w-full mx-auto">
+            <NetworkStatusBanner />
             {children}
           </main>
         </div>

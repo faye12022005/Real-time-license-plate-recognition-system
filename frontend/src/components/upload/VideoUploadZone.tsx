@@ -36,6 +36,16 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllersRef = useRef<Record<string, AbortController>>({});
+  const simulationIntervalsRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+  const processingIdsRef = useRef<Set<string>>(new Set());
+
+  // Thu dọn các request và timer khi unmount để tránh rò rỉ bộ nhớ
+  useEffect(() => {
+    return () => {
+      Object.values(simulationIntervalsRef.current).forEach(clearInterval);
+      Object.values(abortControllersRef.current).forEach((ctrl) => ctrl.abort());
+    };
+  }, []);
 
   // 1. Kiểm tra tính hợp lệ của tệp client-side (Client-side Validation)
   const validateFile = (file: File): { isValid: boolean; error?: string } => {
@@ -124,6 +134,10 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
   // 4. Quá trình xử lý tải lên từng tệp trong Queue
   const processUploadItem = useCallback(
     async (item: UploadQueueItem) => {
+      // Chống gọi lặp đúp trên cùng một item
+      if (processingIdsRef.current.has(item.id)) return;
+      processingIdsRef.current.add(item.id);
+
       const controller = new AbortController();
       abortControllersRef.current[item.id] = controller;
 
@@ -181,12 +195,14 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
 
         if (onJobCreated) onJobCreated(newJob);
 
-        // Giả lập tiến trình AI hoàn tất
+        // Giả lập tiến trình AI hoàn tất có dọn dẹp interval
         let currentPct = 25;
         const interval = setInterval(() => {
           currentPct += 25;
           if (currentPct >= 100) {
             clearInterval(interval);
+            delete simulationIntervalsRef.current[item.id];
+            processingIdsRef.current.delete(item.id);
             setQueue((prev) =>
               prev.map((q) =>
                 q.id === item.id
@@ -215,7 +231,9 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
             );
           }
         }, 1000);
+        simulationIntervalsRef.current[item.id] = interval;
       } catch (err: any) {
+        processingIdsRef.current.delete(item.id);
         setQueue((prev) =>
           prev.map((q) =>
             q.id === item.id
@@ -241,7 +259,7 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
     ).length;
 
     if (activeCount < MAX_CONCURRENT_UPLOADS) {
-      const nextItem = queue.find((q) => q.status === "QUEUED");
+      const nextItem = queue.find((q) => q.status === "QUEUED" && !processingIdsRef.current.has(q.id));
       if (nextItem) {
         processUploadItem(nextItem);
       }
@@ -250,6 +268,12 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
 
   // Hủy tải lên 1 tệp
   const cancelItem = (id: string) => {
+    if (simulationIntervalsRef.current[id]) {
+      clearInterval(simulationIntervalsRef.current[id]);
+      delete simulationIntervalsRef.current[id];
+    }
+    processingIdsRef.current.delete(id);
+
     if (abortControllersRef.current[id]) {
       abortControllersRef.current[id].abort();
       delete abortControllersRef.current[id];
@@ -261,6 +285,12 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
 
   // Thử lại 1 tệp bị lỗi
   const retryItem = (id: string) => {
+    if (simulationIntervalsRef.current[id]) {
+      clearInterval(simulationIntervalsRef.current[id]);
+      delete simulationIntervalsRef.current[id];
+    }
+    processingIdsRef.current.delete(id);
+
     setQueue((prev) =>
       prev.map((q) =>
         q.id === id
@@ -278,6 +308,12 @@ export function VideoUploadZone({ onJobCreated }: { onJobCreated?: (job: VideoJo
 
   // Xóa 1 tệp khỏi hàng đợi
   const removeItem = (id: string) => {
+    if (simulationIntervalsRef.current[id]) {
+      clearInterval(simulationIntervalsRef.current[id]);
+      delete simulationIntervalsRef.current[id];
+    }
+    processingIdsRef.current.delete(id);
+
     if (abortControllersRef.current[id]) {
       abortControllersRef.current[id].abort();
       delete abortControllersRef.current[id];

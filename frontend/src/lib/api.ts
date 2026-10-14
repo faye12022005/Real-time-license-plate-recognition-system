@@ -39,6 +39,33 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
+// Interceptor: Bắt và thông báo lỗi mạng, sập server hoặc CORS toàn cục
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (typeof window !== "undefined") {
+      const isNetworkError =
+        !error.response ||
+        error.code === "ERR_NETWORK" ||
+        error.code === "ECONNABORTED" ||
+        error.message?.includes("Network Error");
+
+      window.dispatchEvent(
+        new CustomEvent("alpr_api_error", {
+          detail: {
+            message: isNetworkError
+              ? "Không thể kết nối đến máy chủ Backend FastAPI (http://localhost:8000). Vui lòng khởi chạy backend hoặc bật Chế độ Dữ liệu mẫu ở sidebar."
+              : error.response?.data?.detail || error.message || "Lỗi giao tiếp máy chủ",
+            status: error.response?.status,
+            isNetworkError,
+          },
+        })
+      );
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Trạng thái trống mặc định (Empty Initial States)
 const EMPTY_KPIS: DashboardKPIs = {
   total_videos: 0,
