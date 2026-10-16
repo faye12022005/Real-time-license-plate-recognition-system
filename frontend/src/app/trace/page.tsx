@@ -103,11 +103,10 @@ function TraceContent() {
                 <div
                   key={item.plate_number}
                   onClick={() => setSelectedSummary(item)}
-                  className={`p-4 rounded-bento border cursor-pointer transition-all ${
-                    selectedSummary?.plate_number === item.plate_number
+                  className={`p-4 rounded-bento border cursor-pointer transition-all ${selectedSummary?.plate_number === item.plate_number
                       ? "bg-primary-light/60 border-primary shadow-xs"
                       : "bg-surface border-border hover:border-slate-300"
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <PlateBadge display={item.plate_display} color={item.plate_type} />

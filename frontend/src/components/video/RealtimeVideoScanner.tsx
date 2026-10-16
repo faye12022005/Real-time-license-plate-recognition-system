@@ -194,7 +194,7 @@ export function RealtimeVideoScanner() {
       videoRef.current.pause();
       setIsPlaying(false);
     } else {
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => { });
     }
   };
 
@@ -213,7 +213,7 @@ export function RealtimeVideoScanner() {
     setCurrentTime(targetSeconds);
     renderOverlay();
     if (!isPlaying) {
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => { });
     }
   };
 
@@ -595,11 +595,10 @@ export function RealtimeVideoScanner() {
                     <button
                       key={rate}
                       onClick={() => changeSpeed(rate)}
-                      className={`text-[10px] font-mono font-bold px-2 py-1 rounded-md transition-all ${
-                        playbackRate === rate
+                      className={`text-[10px] font-mono font-bold px-2 py-1 rounded-md transition-all ${playbackRate === rate
                           ? "bg-primary text-white"
                           : "bg-surface hover:bg-slate-200 text-content-secondary border border-border"
-                      }`}
+                        }`}
                     >
                       {rate}x
                     </button>

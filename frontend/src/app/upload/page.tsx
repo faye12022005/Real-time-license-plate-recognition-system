@@ -105,11 +105,10 @@ export default function UploadPage() {
                     </td>
                     <td className="py-3 px-4">
                       <span
-                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
-                          job.stage === "COMPLETED"
+                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${job.stage === "COMPLETED"
                             ? "bg-emerald-50 text-status-success border-emerald-200"
                             : "bg-blue-50 text-primary border-blue-200"
-                        }`}
+                          }`}
                       >
                         {job.stage === "COMPLETED" ? "HOÀN TẤT" : "ĐANG XỬ LÝ"}
                       </span>
@@ -122,9 +121,8 @@ export default function UploadPage() {
                         </div>
                         <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
                           <div
-                            className={`h-full rounded-full ${
-                              job.stage === "COMPLETED" ? "bg-status-success" : "bg-primary"
-                            }`}
+                            className={`h-full rounded-full ${job.stage === "COMPLETED" ? "bg-status-success" : "bg-primary"
+                              }`}
                             style={{ width: `${job.overall_progress_pct}%` }}
                           />
                         </div>

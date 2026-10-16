@@ -1,13 +1,47 @@
 import React from "react";
-import { alprApi } from "@/lib/api";
+import { cookies } from "next/headers";
+import { alprApi, BackendUnreachableError } from "@/lib/api";
+import { DashboardKPIs, PlateRecord } from "@/types";
 import { RealtimeVideoScanner } from "@/components/video/RealtimeVideoScanner";
 import { KpiCards } from "@/components/dashboard/KpiCards";
 import { QuickTraceBento } from "@/components/dashboard/QuickTraceBento";
 import { RecentPlatesBento } from "@/components/dashboard/RecentPlatesBento";
+import { BackendOffline } from "@/components/dashboard/BackendOffline";
+
+/**
+ * Server Component không có localStorage → đọc cờ Mock từ COOKIE trình duyệt
+ * (do `setMockEnabled()` ghi khi người dùng bật ở Sidebar).
+ * Người dùng chưa từng bật → trả `undefined` để API tự rơi về NEXT_PUBLIC_USE_MOCK.
+ */
+function getMockFlagFromCookie(): boolean | undefined {
+  const raw = cookies().get("alpr_use_mock")?.value;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return undefined;
+}
+
+// Bắt buộc render theo request: KPI và danh sách biển số là dữ liệu realtime,
+// TUYỆT ĐỐI không được Next cache static (sẽ đóng băng số liệu tại thời điểm `next build`).
+export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const kpis = await alprApi.getKPIs();
-  const plates = await alprApi.getPlates();
+  const mock = getMockFlagFromCookie();
+
+  let kpis: DashboardKPIs;
+  let plates: PlateRecord[];
+
+  try {
+    [kpis, plates] = await Promise.all([
+      alprApi.getKPIs({ mock }),
+      alprApi.getPlates(undefined, { mock }),
+    ]);
+  } catch (err) {
+    // Backend không gọi được → giao diện cứu cánh có nút Thử lại / Bật Mock.
+    if (err instanceof BackendUnreachableError) {
+      return <BackendOffline message={err.message} />;
+    }
+    throw err; // lỗi bất thường khác → error.tsx (Error Boundary)
+  }
 
   return (
     <div className="space-y-6">
@@ -38,9 +72,7 @@ export default async function DashboardPage() {
             <h2 className="font-heading font-black text-base text-content-primary tracking-tight">
               Biển số
             </h2>
-            <p className="text-xs text-content-muted">
-              Danh sách biển số đã nhận diện
-            </p>
+            <p className="text-xs text-content-muted">Danh sách biển số đã nhận diện</p>
           </div>
           <RecentPlatesBento plates={plates} />
         </div>

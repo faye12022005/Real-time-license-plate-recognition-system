@@ -36,11 +36,13 @@ export default function ErrorBoundary({
           <p className="text-xs text-content-muted leading-relaxed">
             Hệ thống phát hiện lỗi trong quá trình xử lý hoặc nạp dữ liệu. Bạn có thể thử tải lại trang hoặc kích hoạt chế độ Dữ liệu mẫu.
           </p>
-          {error.message && (
-            <div className="mt-3 p-3 rounded-xl bg-surface-muted border border-border text-[11px] font-mono text-red-600 text-left break-words max-h-32 overflow-y-auto">
-              {error.message}
-            </div>
-          )}
+          <div className="mt-3 p-3 rounded-xl bg-surface-muted border border-border text-[11px] font-mono text-red-600 text-left break-words max-h-32 overflow-y-auto">
+            {error.message ||
+              "Lỗi xảy ra trong lúc render. Ở môi trường production, Next.js ẩn chi tiết kỹ thuật."}
+            {error.digest && (
+              <p className="mt-1.5 text-content-muted">Mã sự cố (digest): {error.digest}</p>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">

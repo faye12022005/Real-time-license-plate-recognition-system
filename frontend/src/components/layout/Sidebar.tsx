@@ -113,28 +113,25 @@ export function Sidebar() {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                    isActive
+                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all ${isActive
                       ? "bg-primary-light text-primary border border-primary-border shadow-xs"
                       : "text-content-secondary hover:text-content-primary hover:bg-surface-muted"
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center gap-3">
                     <Icon
-                      className={`w-4 h-4 transition-colors ${
-                        isActive ? "text-primary" : "text-content-muted group-hover:text-content-primary"
-                      }`}
+                      className={`w-4 h-4 transition-colors ${isActive ? "text-primary" : "text-content-muted group-hover:text-content-primary"
+                        }`}
                     />
                     <span>{item.name}</span>
                   </div>
 
                   {item.badge && (
                     <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        isActive
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isActive
                           ? "bg-primary text-white"
                           : "bg-surface-muted text-content-secondary border border-border"
-                      }`}
+                        }`}
                     >
                       {item.badge}
                     </span>
@@ -153,11 +150,10 @@ export function Sidebar() {
           <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-content-muted">
             <span>Chế độ Xem</span>
             <span
-              className={`px-1.5 py-0.5 rounded font-mono text-[9px] font-bold ${
-                mockActive
+              className={`px-1.5 py-0.5 rounded font-mono text-[9px] font-bold ${mockActive
                   ? "bg-blue-100 text-primary border border-blue-200"
                   : "bg-slate-200 text-slate-700"
-              }`}
+                }`}
             >
               {mockActive ? "DỮ LIỆU MẪU" : "TRỐNG (MẶC ĐỊNH)"}
             </span>
@@ -178,28 +174,27 @@ export function Sidebar() {
         <div className="p-3 rounded-xl bg-surface-muted border border-border flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div
-              className={`w-2.5 h-2.5 rounded-full ${
-                engineStatus === "online"
+              className={`w-2.5 h-2.5 rounded-full ${engineStatus === "online"
                   ? "bg-status-success animate-tech-pulse"
                   : engineStatus === "mock"
-                  ? "bg-primary animate-pulse"
-                  : "bg-status-error"
-              }`}
+                    ? "bg-primary animate-pulse"
+                    : "bg-status-error"
+                }`}
             />
             <div>
               <p className="text-[11px] font-bold text-content-primary">
                 {engineStatus === "online"
                   ? "AI Engine Online"
                   : engineStatus === "mock"
-                  ? "Chế độ Mock Data"
-                  : "Backend Mất kết nối"}
+                    ? "Chế độ Mock Data"
+                    : "Backend Mất kết nối"}
               </p>
               <p className="text-[10px] text-content-muted">
                 {engineStatus === "online"
                   ? "FastAPI Hub Connected"
                   : engineStatus === "mock"
-                  ? "Mô phỏng độc lập"
-                  : "Cổng 8000 không phản hồi"}
+                    ? "Mô phỏng độc lập"
+                    : "Cổng 8000 không phản hồi"}
               </p>
             </div>
           </div>

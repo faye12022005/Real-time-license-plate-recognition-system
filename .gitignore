@@ -26,6 +26,9 @@ data/models/*
 !data/models/.gitkeep
 data/sample_videos/*
 !data/sample_videos/.gitkeep
+data/datasets/*
+!data/datasets/.gitkeep
+!data/datasets/*.yaml
 
 # IDEs & System files
 .vscode/
