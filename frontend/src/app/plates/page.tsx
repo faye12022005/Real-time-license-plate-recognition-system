@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { SafePlateImage } from "@/components/shared/SafePlateImage";
-import { alprApi, setMockEnabled } from "@/lib/api";
+import { alprApi } from "@/lib/api";
 import { PlateRecord, VehicleType } from "@/types";
 import { PlateBadge, VehicleBadge } from "@/components/shared/Badge";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -187,14 +187,9 @@ export default function PlatesDatabasePage() {
           <EmptyState
             icon={Database}
             title="Kho Cơ sở Dữ liệu Biển số Hiện đang Trống"
-            description="Chưa có dữ liệu biển số xe nào được lưu trong hệ thống. Bạn có thể tải lên tệp video mới để AI bắt đầu quét hoặc bấm 'Xem dữ liệu mẫu' để xem trước giao diện khi có dữ liệu."
+            description="Chưa có dữ liệu biển số xe nào được lưu trong hệ thống. Hãy tải lên tệp video mới để AI bắt đầu quét và nhận diện biển số."
             actionText="Tải lên Video ngay"
             onAction={() => (window.location.href = "/upload")}
-            secondaryActionText="Xem trước Dữ liệu mẫu"
-            onSecondaryAction={() => {
-              setMockEnabled(true);
-              window.location.reload();
-            }}
           />
         )}
       </div>

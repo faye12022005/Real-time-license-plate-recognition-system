@@ -21,7 +21,6 @@ import {
 } from "lucide-react";
 import { PlateBadge, VehicleBadge } from "@/components/shared/Badge";
 import { PlateRecord, VehicleType } from "@/types";
-import { MOCK_PLATES } from "@/lib/mockData";
 
 // Dữ liệu mô phỏng vị trí Bounding Box các xe theo từng mốc thời gian (giây)
 interface SimulatedTrack {

@@ -106,3 +106,114 @@ export interface UploadQueueItem {
   detectedPlatesCount?: number;
   createdAt: string;
 }
+
+// =========================================================================
+// QUẢN LÝ NHÀ XE CHUNG CƯ & LUỒNG KẾT NỐI CAMERA (Apartment Parking & Camera)
+// =========================================================================
+
+export type CameraType = "ENTRY" | "EXIT" | "TWO_WAY";
+export type ParkingTicketType = "RESIDENT" | "GUEST" | "STAFF";
+export type ParkingSessionStatus = "PARKED" | "COMPLETED" | "CANCELLED";
+
+export interface ParkingCamera {
+  id: string;
+  name: string;
+  camera_type: CameraType;
+  rtsp_url: string;
+  location: string;
+  resolution: string;
+  fps_limit: number;
+  is_active: number;
+  last_heartbeat?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Payload thêm mới / cập nhật camera (POST /parking/cameras). */
+export interface CameraInput {
+  id?: string;
+  name: string;
+  camera_type: CameraType;
+  rtsp_url: string;
+  location: string;
+  resolution: string;
+  fps_limit: number;
+  is_active: number;
+}
+
+/** Kết quả kiểm tra tín hiệu camera (POST /parking/cameras/{id}/test). */
+export interface CameraConnectionTest {
+  camera_id: string;
+  name: string;
+  rtsp_url: string;
+  connected: boolean;
+  message: string;
+}
+
+export interface ResidentVehicle {
+  id: string;
+  plate_number: string;
+  plate_display: string;
+  owner_name: string;
+  apartment_number: string;
+  phone_number?: string;
+  vehicle_type: VehicleType;
+  rfid_card_id?: string;
+  monthly_fee: number;
+  registered_at: string;
+  expiry_date: string;
+  status: "ACTIVE" | "EXPIRED" | "LOCKED";
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ParkingSession {
+  id: string;
+  plate_number: string;
+  plate_display: string;
+  vehicle_type: VehicleType;
+  ticket_type: ParkingTicketType;
+  status: ParkingSessionStatus;
+
+  // Lượt vào (Entry)
+  entry_time: string;
+  entry_camera_id?: string;
+  entry_gate_name: string;
+  entry_snapshot_url: string;    // Tấm ảnh toàn cảnh xe lúc vào
+  entry_plate_crop_url: string;   // Ảnh crop cận cảnh biển số
+  entry_confidence: number;
+
+  // Lượt ra (Exit)
+  exit_time?: string;
+  exit_camera_id?: string;
+  exit_gate_name?: string;
+  exit_snapshot_url?: string;     // Tấm ảnh toàn cảnh xe lúc ra
+  exit_plate_crop_url?: string;   // Ảnh crop cận cảnh biển số lúc ra
+  exit_plate_number?: string;
+  is_plate_matched?: number;      // 1 = Trùng khớp, 0 = Lệch biển số
+
+  // Cư dân & Cước phí
+  resident_id?: string;
+  apartment_number?: string;
+  resident_name?: string;
+  duration_minutes: number;
+  parking_fee: number;
+  payment_status: "PAID" | "FREE_RESIDENT" | "UNPAID";
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ParkingDashboardStats {
+  currently_parked: number;
+  resident_parked: number;
+  guest_parked: number;
+  entries_today: number;
+  exits_today: number;
+  revenue_today_vnd: number;
+  total_registered_residents: number;
+  total_cameras: number;
+  active_cameras: number;
+  recent_sessions: ParkingSession[];
+}

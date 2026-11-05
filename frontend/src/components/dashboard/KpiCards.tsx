@@ -11,7 +11,7 @@ export function KpiCards({ kpis }: { kpis: DashboardKPIs }) {
       value: kpis.total_videos,
       unit: "video",
       icon: Film,
-      trend: isEmpty ? "Chờ video tải lên" : "+3 hôm nay",
+      trend: isEmpty ? "Chờ video tải lên" : "Tổng tích lũy",
       bgIcon: "bg-blue-50 text-primary border-blue-200",
     },
     {
@@ -35,7 +35,7 @@ export function KpiCards({ kpis }: { kpis: DashboardKPIs }) {
       value: isEmpty ? "--" : `${kpis.avg_accuracy_pct}%`,
       unit: "",
       icon: Award,
-      trend: isEmpty ? "Chờ dữ liệu mẫu" : "Voting đa khung hình",
+      trend: isEmpty ? "Chưa có dữ liệu" : "Voting đa khung hình",
       bgIcon: "bg-amber-50 text-status-warning border-amber-200",
     },
   ];

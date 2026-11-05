@@ -23,10 +23,15 @@ def setup_module():
 
 
 def test_health_check():
-    response = client.get("/")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "online"
+    # Test root endpoint
+    res_root = client.get("/")
+    assert res_root.status_code == 200
+    assert res_root.json()["status"] == "healthy"
+
+    # Test /health endpoint
+    res_health = client.get("/health")
+    assert res_health.status_code == 200
+    assert res_health.json()["status"] == "healthy"
 
 
 def test_analytics_kpis():

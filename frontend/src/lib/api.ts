@@ -1,55 +1,19 @@
 import axios, { type AxiosError } from "axios";
-import { DashboardKPIs, VideoJob, PlateRecord, PlateTraceSummary } from "@/types";
-import { MOCK_KPIS, MOCK_JOBS, MOCK_PLATES, getPlateTrace } from "./mockData";
+import {
+  DashboardKPIs,
+  VideoJob,
+  PlateRecord,
+  PlateTraceSummary,
+  ParkingCamera,
+  CameraInput,
+  CameraConnectionTest,
+  ResidentVehicle,
+  ParkingSession,
+  ParkingDashboardStats,
+} from "@/types";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-
-/** Cờ Mock lưu ở COOKIE để Server Component đọc được (localStorage chỉ tồn tại ở client). */
-const MOCK_COOKIE = "alpr_use_mock";
-const MOCK_COOKIE_MAX_AGE = 60 * 60 * 24 * 365; // 1 năm
-
-/**
- * Người dùng có bật "Xem trước Dữ liệu Mẫu" không?
- *
- * - CLIENT: đọc COOKIE trước (cùng nguồn với SSR) → localStorage (tương thích ngược) → env.
- * - SERVER: không có localStorage, cũng không tự đọc cookie của trình duyệt tại đây.
- *   RSC phải dùng `next/headers` (xem `getMockFlagFromCookie()` ở src/app/page.tsx)
- *   rồi truyền vào API qua `ApiCallOptions.mock`.
- */
-export function isMockEnabled(): boolean {
-  if (typeof document !== "undefined") {
-    const matched = document.cookie.match(
-      new RegExp(`(?:^|;\\s*)${MOCK_COOKIE}=(true|false)(?:;|$)`)
-    );
-    if (matched) return matched[1] === "true";
-    const saved = localStorage.getItem(MOCK_COOKIE);
-    if (saved !== null) return saved === "true";
-  }
-  return process.env.NEXT_PUBLIC_USE_MOCK === "true";
-}
-
-export function setMockEnabled(enabled: boolean) {
-  const value = enabled ? "true" : "false";
-  if (typeof document !== "undefined") {
-    // Cookie: SSR đọc được ngay ở lần request kế tiếp — không còn phụ thuộc localStorage.
-    document.cookie = `${MOCK_COOKIE}=${value};path=/;max-age=${MOCK_COOKIE_MAX_AGE};samesite=lax`;
-    localStorage.setItem(MOCK_COOKIE, value);
-    window.dispatchEvent(new Event("alpr_mock_mode_changed"));
-  }
-}
-
-/**
- * Tùy chọn cho API gọi từ Server Component (RSC).
- * RSC không có localStorage nên KHÔNG THỂ tự quyết định cờ mock — bắt buộc truyền vào.
- */
-export interface ApiCallOptions {
-  /** Kết quả của `getMockFlagFromCookie()`; bỏ trống = tự đọc theo môi trường hiện tại. */
-  mock?: boolean;
-}
-
-function shouldUseMock(opts?: ApiCallOptions): boolean {
-  return opts?.mock ?? isMockEnabled();
-}
+export const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
 /** Không gọi được Backend: chưa chạy / CORS / timeout / HTTP 5xx. */
 export class BackendUnreachableError extends Error {
@@ -76,7 +40,7 @@ function isConnectionFailure(err: unknown): boolean {
 function failOrEmpty<T>(err: unknown, fallback: T): T {
   if (typeof window === "undefined" && isConnectionFailure(err)) {
     throw new BackendUnreachableError(
-      "Không kết nối được Backend FastAPI (http://localhost:8000). Hãy khởi chạy backend hoặc bật Chế độ Dữ liệu Mẫu ở Sidebar."
+      "Không kết nối được Backend FastAPI (http://localhost:8000). Hãy khởi chạy backend rồi thử lại."
     );
   }
   return fallback;
@@ -116,7 +80,7 @@ apiClient.interceptors.response.use(
         new CustomEvent("alpr_api_error", {
           detail: {
             message: isNetworkError
-              ? "Không thể kết nối đến máy chủ Backend FastAPI (http://localhost:8000). Vui lòng khởi chạy backend hoặc bật Chế độ Dữ liệu mẫu ở sidebar."
+              ? "Không thể kết nối đến máy chủ Backend FastAPI (http://localhost:8000). Vui lòng kiểm tra backend đã khởi chạy chưa."
               : error.response?.data?.detail || error.message || "Lỗi giao tiếp máy chủ",
             status: error.response?.status,
             isNetworkError,
@@ -166,8 +130,7 @@ function sanitizeArray<T>(raw: unknown): T[] {
 
 export const alprApi = {
   // 1. Thống kê Dashboard KPI
-  getKPIs: async (opts?: ApiCallOptions): Promise<DashboardKPIs> => {
-    if (shouldUseMock(opts)) return MOCK_KPIS;
+  getKPIs: async (): Promise<DashboardKPIs> => {
     try {
       const res = await apiClient.get<DashboardKPIs>("/analytics/kpis");
       return normalizeKpis(res.data);
@@ -177,8 +140,7 @@ export const alprApi = {
   },
 
   // 2. Danh sách tác vụ Video
-  getJobs: async (opts?: ApiCallOptions): Promise<VideoJob[]> => {
-    if (shouldUseMock(opts)) return MOCK_JOBS;
+  getJobs: async (): Promise<VideoJob[]> => {
     try {
       const res = await apiClient.get<VideoJob[]>("/videos/jobs");
       return sanitizeArray<VideoJob>(res.data);
@@ -193,20 +155,6 @@ export const alprApi = {
     onProgress?: (percent: number) => void,
     signal?: AbortSignal
   ): Promise<{ job_id: string }> => {
-    const newJobId = `job-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-
-    if (shouldUseMock()) {
-      // Giả lập tiến trình upload trong mock mode
-      if (onProgress) {
-        onProgress(30);
-        await new Promise((r) => setTimeout(r, 200));
-        onProgress(70);
-        await new Promise((r) => setTimeout(r, 200));
-        onProgress(100);
-      }
-      return { job_id: newJobId };
-    }
-
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -239,10 +187,7 @@ export const alprApi = {
   },
 
   // 4. Lấy chi tiết tác vụ
-  getJobById: async (jobId: string, opts?: ApiCallOptions): Promise<VideoJob | undefined> => {
-    if (shouldUseMock(opts)) {
-      return MOCK_JOBS.find((j) => j.id === jobId);
-    }
+  getJobById: async (jobId: string): Promise<VideoJob | undefined> => {
     try {
       const res = await apiClient.get<VideoJob>(`/videos/jobs/${jobId}`);
       return res.data;
@@ -252,33 +197,11 @@ export const alprApi = {
   },
 
   // 5. Lấy danh sách biển số xe đã lưu trong Database
-  getPlates: async (
-    params?: {
-      q?: string;
-      vehicle_type?: string;
-      job_id?: string;
-    },
-    opts?: ApiCallOptions
-  ): Promise<PlateRecord[]> => {
-    if (shouldUseMock(opts)) {
-      let filtered = [...MOCK_PLATES];
-      if (params?.q) {
-        const q = params.q;
-        const query = q.toUpperCase().replace(/[-.]/g, "");
-        filtered = filtered.filter(
-          (p) =>
-            p.plate_number.includes(query) ||
-            p.plate_display.toUpperCase().includes(q.toUpperCase())
-        );
-      }
-      if (params?.vehicle_type && params.vehicle_type !== "all") {
-        filtered = filtered.filter((p) => p.vehicle_type === params.vehicle_type);
-      }
-      if (params?.job_id) {
-        filtered = filtered.filter((p) => p.job_id === params.job_id);
-      }
-      return filtered;
-    }
+  getPlates: async (params?: {
+    q?: string;
+    vehicle_type?: string;
+    job_id?: string;
+  }): Promise<PlateRecord[]> => {
     try {
       const res = await apiClient.get<PlateRecord[]>("/plates/records", { params });
       return sanitizeArray<PlateRecord>(res.data);
@@ -288,10 +211,7 @@ export const alprApi = {
   },
 
   // 6. Truy vết biển số xe (Plate Trace)
-  tracePlate: async (plateNumber: string, opts?: ApiCallOptions): Promise<PlateTraceSummary[]> => {
-    if (shouldUseMock(opts)) {
-      return getPlateTrace(plateNumber);
-    }
+  tracePlate: async (plateNumber: string): Promise<PlateTraceSummary[]> => {
     try {
       const res = await apiClient.get<PlateTraceSummary[]>("/plates/trace", {
         params: { plate: plateNumber },
@@ -299,6 +219,122 @@ export const alprApi = {
       return sanitizeArray<PlateTraceSummary>(res.data);
     } catch (err) {
       return failOrEmpty<PlateTraceSummary[]>(err, []);
+    }
+  },
+
+  // 7. Thống kê bãi xe chung cư
+  getParkingStats: async (): Promise<ParkingDashboardStats | undefined> => {
+    try {
+      const res = await apiClient.get<ParkingDashboardStats>("/parking/stats");
+      return res.data;
+    } catch (err) {
+      return failOrEmpty<ParkingDashboardStats | undefined>(err, undefined);
+    }
+  },
+
+  // 8. Lấy danh sách lượt xe vào/ra bãi chung cư
+  getParkingSessions: async (params?: {
+    status?: string;
+    plate?: string;
+    ticket_type?: string;
+    apartment?: string;
+    limit?: number;
+  }): Promise<ParkingSession[]> => {
+    try {
+      const res = await apiClient.get<ParkingSession[]>("/parking/sessions", { params });
+      return sanitizeArray<ParkingSession>(res.data);
+    } catch (err) {
+      return failOrEmpty<ParkingSession[]>(err, []);
+    }
+  },
+
+  // 9. Lấy chi tiết phiên gửi xe (ảnh vào vs ảnh ra)
+  getParkingSessionById: async (sessionId: string): Promise<ParkingSession | undefined> => {
+    try {
+      const res = await apiClient.get<ParkingSession>(`/parking/sessions/${sessionId}`);
+      return res.data;
+    } catch (err) {
+      return failOrEmpty<ParkingSession | undefined>(err, undefined);
+    }
+  },
+
+  // 10. Ghi nhận xe vào bãi (Check-in trigger hoặc nhập biển)
+  checkInVehicle: async (payload: {
+    camera_id?: string;
+    plate_number?: string;
+    vehicle_type?: string;
+    notes?: string;
+  }): Promise<{ status: string; message: string; data: ParkingSession }> => {
+    const res = await apiClient.post("/parking/check-in", payload);
+    return res.data;
+  },
+
+  // 11. Ghi nhận xe vào bãi kèm chụp/tải ảnh
+  checkInVehicleWithImage: async (formData: FormData): Promise<{ status: string; message: string; data: ParkingSession }> => {
+    const res = await apiClient.post("/parking/check-in/upload", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return res.data;
+  },
+
+  // 12. Ghi nhận xe ra bãi (Check-out trigger hoặc đối soát biển)
+  checkOutVehicle: async (payload: {
+    camera_id?: string;
+    plate_number?: string;
+    session_id?: string;
+    notes?: string;
+  }): Promise<{ status: string; message: string; data: ParkingSession }> => {
+    const res = await apiClient.post("/parking/check-out", payload);
+    return res.data;
+  },
+
+  // 13. Ghi nhận xe ra bãi kèm chụp/tải ảnh
+  checkOutVehicleWithImage: async (formData: FormData): Promise<{ status: string; message: string; data: ParkingSession }> => {
+    const res = await apiClient.post("/parking/check-out/upload", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return res.data;
+  },
+
+  // 14. Danh sách Camera làn xe
+  getParkingCameras: async (): Promise<ParkingCamera[]> => {
+    try {
+      const res = await apiClient.get<ParkingCamera[]>("/parking/cameras");
+      return sanitizeArray<ParkingCamera>(res.data);
+    } catch (err) {
+      return failOrEmpty<ParkingCamera[]>(err, []);
+    }
+  },
+
+  // 15. Thêm mới / cập nhật Camera (RTSP hoặc Webcam)
+  createOrUpdateCamera: async (payload: CameraInput): Promise<ParkingCamera> => {
+    const res = await apiClient.post<ParkingCamera>("/parking/cameras", payload);
+    return res.data;
+  },
+
+  // 16. Xóa cấu hình Camera
+  deleteCamera: async (cameraId: string): Promise<{ status: string; message: string }> => {
+    const res = await apiClient.delete<{ status: string; message: string }>(
+      `/parking/cameras/${encodeURIComponent(cameraId)}`
+    );
+    return res.data;
+  },
+
+  // 17. Kiểm tra tín hiệu kết nối thực tế tới Camera
+  testCameraConnection: async (cameraId: string): Promise<CameraConnectionTest> => {
+    const res = await apiClient.post<CameraConnectionTest>(
+      `/parking/cameras/${encodeURIComponent(cameraId)}/test`
+    );
+    return res.data;
+  },
+
+  // 18. Danh sách xe cư dân đăng ký
+  getResidents: async (params?: { q?: string; apartment?: string; status?: string }): Promise<ResidentVehicle[]> => {
+    try {
+      const res = await apiClient.get<ResidentVehicle[]>("/parking/residents", { params });
+      return sanitizeArray<ResidentVehicle>(res.data);
+    } catch (err) {
+      return failOrEmpty<ResidentVehicle[]>(err, []);
     }
   },
 };

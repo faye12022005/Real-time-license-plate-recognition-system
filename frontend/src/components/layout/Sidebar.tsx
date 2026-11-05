@@ -6,17 +6,15 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   UploadCloud,
+  Camera,
   Database,
   SearchCode,
   ShieldCheck,
   Cpu,
   ChevronRight,
-  Sparkles,
-  ToggleLeft,
-  ToggleRight,
   AlertTriangle,
 } from "lucide-react";
-import { isMockEnabled, setMockEnabled, apiClient } from "@/lib/api";
+import { apiClient } from "@/lib/api";
 
 const NAV_ITEMS = [
   {
@@ -30,6 +28,12 @@ const NAV_ITEMS = [
     href: "/upload",
     icon: UploadCloud,
     badge: "AI 2.0",
+  },
+  {
+    name: "Camera giám sát",
+    href: "/cameras",
+    icon: Camera,
+    badge: "Live",
   },
   {
     name: "Biển số",
@@ -47,33 +51,29 @@ const NAV_ITEMS = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [mockActive, setMockActive] = useState<boolean>(false);
-  const [engineStatus, setEngineStatus] = useState<"mock" | "online" | "offline">("online");
+  const [engineStatus, setEngineStatus] = useState<"online" | "offline">("online");
 
   useEffect(() => {
-    const isMock = isMockEnabled();
-    setMockActive(isMock);
-    if (isMock) {
-      setEngineStatus("mock");
-    } else {
-      // Kiểm tra tín hiệu thực tế từ Backend FastAPI
-      apiClient
-        .get("/analytics/kpis")
-        .then(() => setEngineStatus("online"))
-        .catch(() => setEngineStatus("offline"));
+    let cancelled = false;
 
-      const handleApiError = () => setEngineStatus("offline");
-      window.addEventListener("alpr_api_error", handleApiError);
-      return () => window.removeEventListener("alpr_api_error", handleApiError);
-    }
+    // Kiểm tra tín hiệu thực tế từ Backend FastAPI
+    apiClient
+      .get("/analytics/kpis")
+      .then(() => {
+        if (!cancelled) setEngineStatus("online");
+      })
+      .catch(() => {
+        if (!cancelled) setEngineStatus("offline");
+      });
+
+    const handleApiError = () => setEngineStatus("offline");
+    window.addEventListener("alpr_api_error", handleApiError);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("alpr_api_error", handleApiError);
+    };
   }, []);
-
-  const handleToggleMock = () => {
-    const nextState = !mockActive;
-    setMockActive(nextState);
-    setMockEnabled(nextState);
-    window.location.reload();
-  };
 
   return (
     <aside className="w-64 bg-surface border-r border-border h-screen flex flex-col justify-between shrink-0 sticky top-0 z-30 select-none">
@@ -143,65 +143,28 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Bottom: Data Switcher, System Status & User Profile */}
+      {/* Bottom: System Status & User Profile */}
       <div className="p-4 border-t border-border/80 space-y-3 bg-surface">
-        {/* Chế độ Dữ liệu (Mock Data vs Giao diện Trống) */}
-        <div className="p-2.5 rounded-xl bg-surface-muted border border-border space-y-1.5">
-          <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-content-muted">
-            <span>Chế độ Xem</span>
-            <span
-              className={`px-1.5 py-0.5 rounded font-mono text-[9px] font-bold ${mockActive
-                  ? "bg-blue-100 text-primary border border-blue-200"
-                  : "bg-slate-200 text-slate-700"
-                }`}
-            >
-              {mockActive ? "DỮ LIỆU MẪU" : "TRỐNG (MẶC ĐỊNH)"}
-            </span>
-          </div>
-
-          <button
-            onClick={handleToggleMock}
-            className="w-full py-1.5 px-2 bg-white hover:bg-slate-50 border border-border rounded-lg text-[11px] font-semibold text-content-primary flex items-center justify-center gap-1.5 transition-all shadow-2xs hover:border-primary/50"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-primary" />
-            <span>
-              {mockActive ? "Chuyển về Giao diện Trống" : "Xem trước Dữ liệu Mẫu"}
-            </span>
-          </button>
-        </div>
-
         {/* System Health Card (Trạng thái động thực tế) */}
         <div className="p-3 rounded-xl bg-surface-muted border border-border flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div
               className={`w-2.5 h-2.5 rounded-full ${engineStatus === "online"
                   ? "bg-status-success animate-tech-pulse"
-                  : engineStatus === "mock"
-                    ? "bg-primary animate-pulse"
-                    : "bg-status-error"
+                  : "bg-status-error"
                 }`}
             />
             <div>
               <p className="text-[11px] font-bold text-content-primary">
-                {engineStatus === "online"
-                  ? "AI Engine Online"
-                  : engineStatus === "mock"
-                    ? "Chế độ Mock Data"
-                    : "Backend Mất kết nối"}
+                {engineStatus === "online" ? "AI Engine Online" : "Backend Mất kết nối"}
               </p>
               <p className="text-[10px] text-content-muted">
-                {engineStatus === "online"
-                  ? "FastAPI Hub Connected"
-                  : engineStatus === "mock"
-                    ? "Mô phỏng độc lập"
-                    : "Cổng 8000 không phản hồi"}
+                {engineStatus === "online" ? "FastAPI Hub Connected" : "Cổng 8000 không phản hồi"}
               </p>
             </div>
           </div>
           {engineStatus === "online" ? (
             <ShieldCheck className="w-4 h-4 text-status-success" />
-          ) : engineStatus === "mock" ? (
-            <Sparkles className="w-4 h-4 text-primary" />
           ) : (
             <AlertTriangle className="w-4 h-4 text-status-error" />
           )}

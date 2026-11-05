@@ -1,12 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { alprApi, setMockEnabled } from "@/lib/api";
+import { alprApi } from "@/lib/api";
 import { VideoJob } from "@/types";
-import { RealtimeVideoScanner } from "@/components/video/RealtimeVideoScanner";
 import { VideoUploadZone } from "@/components/upload/VideoUploadZone";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Film, CheckCircle2, Clock, AlertTriangle, Play, FileVideo, RotateCcw } from "lucide-react";
+import { Film, FileVideo, RotateCcw } from "lucide-react";
 
 export default function UploadPage() {
   const [jobs, setJobs] = useState<VideoJob[]>([]);
@@ -38,9 +37,6 @@ export default function UploadPage() {
           Tải lên video camera giao thông để hệ thống tự động bóc tách tất cả biển số xe và nạp vào cơ sở dữ liệu
         </p>
       </div>
-
-      {/* Video Scanner & Realtime Processor Viewport */}
-      <RealtimeVideoScanner />
 
       {/* Multi-file Upload Queue Zone */}
       <div className="bg-surface border border-border rounded-bento p-6 shadow-bento space-y-3">
@@ -147,11 +143,6 @@ export default function UploadPage() {
             icon={Film}
             title="Chưa có Tác vụ Phân tích Video nào"
             description="Hàng đợi xử lý hiện đang trống. Hãy chọn hoặc kéo thả tệp video ở khung trên để khởi chạy quá trình quét nhận diện."
-            secondaryActionText="Xem trước Dữ liệu mẫu"
-            onSecondaryAction={() => {
-              setMockEnabled(true);
-              window.location.reload();
-            }}
           />
         )}
       </div>

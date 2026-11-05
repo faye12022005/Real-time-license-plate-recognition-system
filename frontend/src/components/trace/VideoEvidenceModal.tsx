@@ -4,6 +4,7 @@ import React, { useRef, useEffect } from "react";
 import { PlateRecord } from "@/types";
 import { X, Film, MapPin, RotateCcw } from "lucide-react";
 import { PlateBadge, VehicleBadge } from "@/components/shared/Badge";
+import { resolveMediaUrl } from "@/lib/media";
 
 interface VideoEvidenceModalProps {
   record: PlateRecord | null;
@@ -25,9 +26,7 @@ export function VideoEvidenceModal({ record, onClose }: VideoEvidenceModalProps)
   if (!record) return null;
 
   const targetSeconds = Math.max(0, (record.pts_ms || 0) / 1000);
-  const videoSrc =
-    record.video_url ||
-    "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+  const videoSrc = resolveMediaUrl(record.video_url);
 
   const handleSeekToEvent = () => {
     if (videoRef.current) {
@@ -66,22 +65,31 @@ export function VideoEvidenceModal({ record, onClose }: VideoEvidenceModalProps)
 
         {/* Video Player with dynamic source and Auto-Seek to Event */}
         <div className="relative aspect-video rounded-xl overflow-hidden bg-slate-900 border border-slate-700 flex items-center justify-center group">
-          <video
-            ref={videoRef}
-            controls
-            autoPlay
-            muted
-            playsInline
-            crossOrigin="anonymous"
-            className="w-full h-full object-contain"
-            src={videoSrc}
-            onLoadedMetadata={() => {
-              if (videoRef.current) {
-                // Tự động tua đến trước mốc sự kiện 1 giây
-                videoRef.current.currentTime = Math.max(0, targetSeconds - 1);
-              }
-            }}
-          />
+          {videoSrc ? (
+            <video
+              ref={videoRef}
+              controls
+              autoPlay
+              muted
+              playsInline
+              className="w-full h-full object-contain"
+              src={videoSrc}
+              onLoadedMetadata={() => {
+                if (videoRef.current) {
+                  // Tự động tua đến trước mốc sự kiện 1 giây
+                  videoRef.current.currentTime = Math.max(0, targetSeconds - 1);
+                }
+              }}
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-2 px-6 text-center text-slate-400">
+              <Film className="w-8 h-8 text-slate-600" />
+              <p className="text-xs font-semibold">Chưa có video nguồn cho bản ghi này</p>
+              <p className="text-[10px] text-slate-500">
+                Ảnh crop biển số vẫn có thể dùng làm bằng chứng.
+              </p>
+            </div>
+          )}
 
           {/* Time & Plate HUD Overlay */}
           <div className="absolute top-3 left-3 bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-700 text-white flex items-center gap-2.5 pointer-events-none">
@@ -93,14 +101,16 @@ export function VideoEvidenceModal({ record, onClose }: VideoEvidenceModalProps)
           </div>
 
           {/* Quick Seek to Event Button */}
-          <button
-            onClick={handleSeekToEvent}
-            className="absolute top-3 right-3 bg-primary/90 hover:bg-primary text-white text-[11px] font-semibold font-mono px-2.5 py-1.5 rounded-lg shadow-sm flex items-center gap-1.5 transition-all hover:scale-105"
-            title="Tua về đúng khoảnh khắc xe xuất hiện"
-          >
-            <RotateCcw className="w-3 h-3" />
-            <span>Tua mốc {record.video_time_str}</span>
-          </button>
+          {videoSrc && (
+            <button
+              onClick={handleSeekToEvent}
+              className="absolute top-3 right-3 bg-primary/90 hover:bg-primary text-white text-[11px] font-semibold font-mono px-2.5 py-1.5 rounded-lg shadow-sm flex items-center gap-1.5 transition-all hover:scale-105"
+              title="Tua về đúng khoảnh khắc xe xuất hiện"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Tua mốc {record.video_time_str}</span>
+            </button>
+          )}
         </div>
 
         {/* Record Metadata Info */}

@@ -1,36 +1,50 @@
-"""Main entry point for the ALPR service."""
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from src.api.app import app as api_app
-from src.main import start_service
+"""Main entry point for SMART ALPR 2.0 Backend Server."""
 
-# CORS middleware
-cors = CORSMiddleware(
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["*"],
-)
+import sys
+from pathlib import Path
 
-app = FastAPI(
-    title="Smart ALPR 2.0",
-    description="Real-time License Plate Recognition System",
-    version="2.0.0",
-    lifespan=lambda: start_service(),
-)
+# Add project root to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
-app.add_middleware(cors, cors=cors)
+# Ensure UTF-8 output on Windows terminal
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
-@app.on_event("startup")
-async def startup():
-    # Initialize database
-    from src.database.connection import init_db
-    init_db()
-    logger.info("ALPR system started")
+import uvicorn
+from api.app import app
+from src.database.connection import init_db
 
-@app.on_event("shutdown")
-async def shutdown():
-    logger.info("ALPR system stopped")
+
+def main() -> None:
+    """Initialize database and start FastAPI server with Uvicorn."""
+    db_status = init_db()
+
+    print("\n" + "=" * 68)
+    print(" 🚀 SMART ALPR 2.0 BACKEND SERVER (PARKING & LICENSE PLATE SYSTEM)")
+    print("=" * 68)
+    print(f" • Cơ sở dữ liệu  : {db_status.get('server_version', db_status.get('engine', 'Unknown')).upper()}")
+    print(f" • Tên Database   : {db_status.get('database', db_status.get('database_path', 'ALPR_DB'))}")
+    print(f" • Trạng thái DB  : {db_status.get('message', 'Kết nối thành công')}")
+    print(f" • Số lượng bảng  : {len(db_status.get('tables', {}))} bảng (Tổng bản ghi: {db_status.get('total_records', 0)} - Sạch)")
+    print(" • API Base URL   : http://localhost:8000/api/v1")
+    print(" • Swagger Docs   : http://localhost:8000/docs")
+    print(" • ReDoc          : http://localhost:8000/redoc")
+    print(" • Next.js Client : http://localhost:3000")
+    print("=" * 68 + "\n")
+
+    uvicorn.run(
+        "api.app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info",
+    )
+
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    main()

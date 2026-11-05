@@ -1,5 +1,5 @@
 import React from "react";
-import { LucideIcon, Sparkles } from "lucide-react";
+import { LucideIcon } from "lucide-react";
 
 interface EmptyStateProps {
   icon: LucideIcon;
@@ -7,8 +7,6 @@ interface EmptyStateProps {
   description: string;
   actionText?: string;
   onAction?: () => void;
-  secondaryActionText?: string;
-  onSecondaryAction?: () => void;
   className?: string;
 }
 
@@ -18,8 +16,6 @@ export function EmptyState({
   description,
   actionText,
   onAction,
-  secondaryActionText,
-  onSecondaryAction,
   className = "",
 }: EmptyStateProps) {
   return (
@@ -39,26 +35,14 @@ export function EmptyState({
         </p>
       </div>
 
-      {(actionText || secondaryActionText) && (
+      {actionText && onAction && (
         <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
-          {actionText && onAction && (
-            <button
-              onClick={onAction}
-              className="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-xl shadow-xs transition-all hover:scale-[1.02] active:scale-[0.98]"
-            >
-              {actionText}
-            </button>
-          )}
-
-          {secondaryActionText && onSecondaryAction && (
-            <button
-              onClick={onSecondaryAction}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-content-secondary hover:text-content-primary text-xs font-semibold rounded-xl border border-border shadow-2xs transition-all"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-primary" />
-              <span>{secondaryActionText}</span>
-            </button>
-          )}
+          <button
+            onClick={onAction}
+            className="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-xl shadow-xs transition-all hover:scale-[1.02] active:scale-[0.98]"
+          >
+            {actionText}
+          </button>
         </div>
       )}
     </div>

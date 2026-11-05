@@ -31,6 +31,7 @@ data/datasets/*
 !data/datasets/*.yaml
 
 # IDEs & System files
+.env
 .vscode/
 .idea/
 .DS_Store

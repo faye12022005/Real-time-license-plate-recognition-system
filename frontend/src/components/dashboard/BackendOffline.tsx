@@ -2,8 +2,7 @@
 
 import React from "react";
 import { useRouter } from "next/navigation";
-import { CloudOff, RefreshCw, Sparkles } from "lucide-react";
-import { setMockEnabled } from "@/lib/api";
+import { CloudOff, RefreshCw } from "lucide-react";
 
 /**
  * Thay thế nội dung Dashboard khi SSR không gọi được Backend.
@@ -39,17 +38,6 @@ export function BackendOffline({ message }: { message?: string }) {
         >
           <RefreshCw className="w-4 h-4" />
           <span>Thử lại</span>
-        </button>
-
-        <button
-          onClick={() => {
-            setMockEnabled(true);
-            router.refresh();
-          }}
-          className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-surface-muted hover:bg-slate-200 text-content-primary text-xs font-semibold rounded-xl border border-border transition-all"
-        >
-          <Sparkles className="w-4 h-4 text-primary" />
-          <span>Bật Chế độ Dữ liệu Mẫu</span>
         </button>
       </div>
     </div>
