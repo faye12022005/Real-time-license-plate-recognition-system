@@ -105,6 +105,9 @@ export interface UploadQueueItem {
   currentFps?: number;
   etaSeconds?: number;
   detectedPlatesCount?: number;
+  totalFrames?: number;
+  processedFrames?: number;
+  processedVideoUrl?: string;
   createdAt: string;
 }
 

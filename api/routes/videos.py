@@ -4,11 +4,12 @@ import datetime
 import shutil
 import time
 from pathlib import Path
-from typing import List, Optional
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 
-from config.settings import SAMPLES_DIR
-from src.database.repository import get_video_job, insert_video_job, list_video_jobs
+from config.settings import CAPTURES_DIR, SAMPLES_DIR
+from src.database.repository import delete_video_job, delete_video_jobs, get_video_job, insert_video_job, list_video_jobs
 from src.pipeline.alpr_pipeline import ALPRPipeline
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
@@ -105,4 +106,100 @@ def get_plates_by_job_id(job_id: str):
     """Retrieve all plate records detected in a specific video job."""
     from src.database.repository import list_plates
     return list_plates(job_id=job_id)
+
+
+class VideoJobDeleteRequest(BaseModel):
+    """Payload for deleting multiple uploaded video jobs."""
+    job_ids: List[str]
+
+
+def _delete_job_files(job_id: str, job: Dict[str, Any]) -> None:
+    """Delete files created for a video job (original, annotated, crops)."""
+    import shutil
+
+    filename = job.get("filename") or ""
+    if filename:
+        safe_filename = f"{job_id}_{filename}"
+        original_path = SAMPLES_DIR / safe_filename
+        if original_path.is_file():
+            original_path.unlink(missing_ok=True)
+
+        annotated_filename = f"annotated_{filename}"
+        if not annotated_filename.lower().endswith(".mp4"):
+            annotated_filename = f"{Path(annotated_filename).stem}.mp4"
+        annotated_path = SAMPLES_DIR / annotated_filename
+        if annotated_path.is_file():
+            annotated_path.unlink(missing_ok=True)
+
+    captures_dir = CAPTURES_DIR / job_id
+    if captures_dir.exists() and captures_dir.is_dir():
+        shutil.rmtree(captures_dir, ignore_errors=True)
+
+
+@router.delete("/jobs/{job_id}")
+def delete_video_job_endpoint(job_id: str):
+    """Delete one uploaded video job, its DB records, and related files."""
+    job = get_video_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ video")
+
+    deleted = delete_video_job(job_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ video")
+
+    file_errors: List[str] = []
+    try:
+        _delete_job_files(job_id, job)
+    except Exception as exc:
+        file_errors.append(str(exc))
+
+    return {
+        "status": "success",
+        "job_id": job_id,
+        "deleted": True,
+        "file_errors": file_errors,
+    }
+
+
+@router.delete("/jobs")
+def delete_multiple_video_jobs(job_ids: List[str] = Query(..., description="Danh sách job_id cần xóa")):
+    """Delete multiple uploaded video jobs by query list."""
+    results: List[Dict[str, Any]] = []
+    deleted_count = 0
+
+    for job_id in job_ids:
+        job = get_video_job(job_id)
+        if not job:
+            results.append({"job_id": job_id, "deleted": False, "reason": "not_found"})
+            continue
+
+        deleted = delete_video_job(job_id)
+        file_errors: List[str] = []
+        if deleted:
+            deleted_count += 1
+            try:
+                _delete_job_files(job_id, job)
+            except Exception as exc:
+                file_errors.append(str(exc))
+
+        results.append(
+            {
+                "job_id": job_id,
+                "deleted": deleted,
+                "file_errors": file_errors,
+            }
+        )
+
+    return {
+        "status": "success",
+        "deleted_count": deleted_count,
+        "requested_count": len(job_ids),
+        "results": results,
+    }
+
+
+@router.post("/jobs/delete")
+def delete_multiple_video_jobs_body(payload: VideoJobDeleteRequest):
+    """Delete multiple uploaded video jobs from JSON body."""
+    return delete_multiple_video_jobs(job_ids=payload.job_ids)
 

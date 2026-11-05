@@ -7,6 +7,7 @@ import { VideoJob } from "@/types";
 import { VideoUploadZone } from "@/components/upload/VideoUploadZone";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ProcessedVideoModal } from "@/components/video/ProcessedVideoModal";
+import { useRealtimeEvent } from "@/lib/useRealtime";
 import { Film, FileVideo, RotateCcw, Play, Sparkles, ExternalLink } from "lucide-react";
 
 export default function UploadPage() {
@@ -28,6 +29,19 @@ export default function UploadPage() {
       prev.map((job) => (job.id === jobId ? { ...job, ...updates } : job))
     );
   };
+
+  // Đồng bộ thời gian thực khi có tiến trình cập nhật từ Backend AI
+  useRealtimeEvent<{ job_id: string; [key: string]: any }>("video_job_updated", (update) => {
+    if (!update || !update.job_id) return;
+    setJobs((prev) =>
+      prev.map((j) => (j.id === update.job_id ? { ...j, ...update } : j))
+    );
+  });
+
+  useRealtimeEvent<VideoJob>("video_job_created", (newJob) => {
+    if (!newJob || !newJob.id) return;
+    setJobs((prev) => [newJob, ...prev.filter((j) => j.id !== newJob.id)]);
+  });
 
   return (
     <div className="space-y-6">
@@ -54,6 +68,7 @@ export default function UploadPage() {
         <VideoUploadZone
           onJobCreated={(newJob) => setJobs((prev) => [newJob, ...prev])}
           onJobUpdated={handleJobUpdated}
+          onOpenVideoModal={(job) => setSelectedJobForVideo(job)}
         />
       </div>
 

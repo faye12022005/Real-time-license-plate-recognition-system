@@ -6,15 +6,18 @@ import {
   CheckCircle2,
   AlertCircle,
   FileVideo,
-  Cpu,
+  Sparkles,
   RefreshCw,
   X,
   Trash2,
   ListOrdered,
   AlertTriangle,
   Play,
+  Clock,
+  Gauge,
 } from "lucide-react";
 import { alprApi } from "@/lib/api";
+import { useRealtimeEvent } from "@/lib/useRealtime";
 import { VideoJob, UploadQueueItem, QueueStatus } from "@/types";
 
 const MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1 GB
@@ -29,33 +32,129 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
+interface VideoUploadZoneProps {
+  onJobCreated?: (job: VideoJob) => void;
+  onJobUpdated?: (jobId: string, updates: Partial<VideoJob>) => void;
+  onOpenVideoModal?: (job: VideoJob) => void;
+}
+
 export function VideoUploadZone({
   onJobCreated,
   onJobUpdated,
-}: {
-  onJobCreated?: (job: VideoJob) => void;
-  onJobUpdated?: (jobId: string, updates: Partial<VideoJob>) => void;
-}) {
+  onOpenVideoModal,
+}: VideoUploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [queue, setQueue] = useState<UploadQueueItem[]>([]);
   const [globalError, setGlobalError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllersRef = useRef<Record<string, AbortController>>({});
-  const simulationIntervalsRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
   const processingIdsRef = useRef<Set<string>>(new Set());
 
-  // Thu dọn các request và timer khi unmount để tránh rò rỉ bộ nhớ
+  // Thu dọn request khi unmount
   useEffect(() => {
     return () => {
-      Object.values(simulationIntervalsRef.current).forEach(clearInterval);
       Object.values(abortControllersRef.current).forEach((ctrl) => ctrl.abort());
     };
   }, []);
 
-  // 1. Kiểm tra tính hợp lệ của tệp client-side (Client-side Validation)
+  // =========================================================================
+  // Đồng bộ Tiến trình AI Thật qua WebSocket
+  // =========================================================================
+  useRealtimeEvent<{ job_id: string; [key: string]: any }>(
+    "video_job_updated",
+    (update) => {
+      if (!update || !update.job_id) return;
+      const isDone = update.stage === "COMPLETED";
+      const isFailed = update.stage === "FAILED";
+
+      setQueue((prev) =>
+        prev.map((q) => {
+          if (q.jobId === update.job_id) {
+            const newStatus: QueueStatus = isDone
+              ? "COMPLETED"
+              : isFailed
+              ? "ERROR"
+              : "PROCESSING";
+
+            const progress = isDone
+              ? 100
+              : Math.round(update.stage_progress_pct ?? update.overall_progress_pct ?? q.overallProgress ?? 0);
+
+            return {
+              ...q,
+              status: newStatus,
+              overallProgress: progress,
+              processedFrames: update.processed_frames ?? q.processedFrames,
+              totalFrames: update.total_frames ?? q.totalFrames,
+              currentFps: update.current_fps ?? q.currentFps,
+              etaSeconds: update.eta_seconds ?? q.etaSeconds,
+              detectedPlatesCount: update.detected_plates_count ?? q.detectedPlatesCount,
+              processedVideoUrl: update.processed_video_url ?? q.processedVideoUrl,
+              errorMessage: update.error_message || q.errorMessage,
+            };
+          }
+          return q;
+        })
+      );
+    }
+  );
+
+  // =========================================================================
+  // Polling dự phòng mỗi 1.5s cho các job đang PROCESSING để đảm bảo 100% đồng bộ
+  // =========================================================================
+  useEffect(() => {
+    const activeJobs = queue.filter(
+      (q) => q.status === "PROCESSING" && q.jobId
+    );
+    if (activeJobs.length === 0) return;
+
+    const interval = setInterval(() => {
+      activeJobs.forEach(async (item) => {
+        if (!item.jobId) return;
+        try {
+          const freshJob = await alprApi.getJobById(item.jobId);
+          if (freshJob) {
+            const isDone = freshJob.stage === "COMPLETED";
+            const isFailed = freshJob.stage === "FAILED";
+
+            setQueue((prev) =>
+              prev.map((q) => {
+                if (q.id === item.id) {
+                  return {
+                    ...q,
+                    status: isDone ? "COMPLETED" : isFailed ? "ERROR" : "PROCESSING",
+                    overallProgress: isDone
+                      ? 100
+                      : Math.round(freshJob.stage_progress_pct ?? freshJob.overall_progress_pct ?? 0),
+                    processedFrames: freshJob.processed_frames,
+                    totalFrames: freshJob.total_frames,
+                    currentFps: freshJob.current_fps,
+                    etaSeconds: freshJob.eta_seconds,
+                    detectedPlatesCount: freshJob.detected_plates_count,
+                    processedVideoUrl: freshJob.processed_video_url,
+                    errorMessage: freshJob.error_message,
+                  };
+                }
+                return q;
+              })
+            );
+
+            if (onJobUpdated && item.jobId) {
+              onJobUpdated(item.jobId, freshJob);
+            }
+          }
+        } catch {
+          // Bỏ qua lỗi mạng nhất thời trong lúc polling
+        }
+      });
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [queue, onJobUpdated]);
+
+  // 1. Kiểm tra tính hợp lệ của tệp
   const validateFile = (file: File): { isValid: boolean; error?: string } => {
-    // Kiểm tra tệp rỗng (0-byte)
     if (file.size === 0) {
       return {
         isValid: false,
@@ -63,15 +162,13 @@ export function VideoUploadZone({
       };
     }
 
-    // Kiểm tra dung lượng vượt ngưỡng 1GB
     if (file.size > MAX_FILE_SIZE) {
       return {
         isValid: false,
-        error: `Dung lượng (${formatBytes(file.size)}) vượt quá giới hạn tối đa 1GB`,
+        error: `Dung lượng (${formatBytes(file.size)}) vượt quá giới hạn 1GB`,
       };
     }
 
-    // Kiểm tra phần mở rộng định dạng tệp
     const ext = "." + file.name.split(".").pop()?.toLowerCase();
     const isAllowedExt = ALLOWED_EXTENSIONS.includes(ext);
     const isVideoMime = file.type.startsWith("video/") || file.type === "";
@@ -86,7 +183,7 @@ export function VideoUploadZone({
     return { isValid: true };
   };
 
-  // 2. Thêm danh sách tệp vào Hàng đợi (Enqueue)
+  // 2. Thêm danh sách tệp vào Hàng đợi
   const addFilesToQueue = (files: File[]) => {
     setGlobalError(null);
     const newItems: UploadQueueItem[] = [];
@@ -133,27 +230,26 @@ export function VideoUploadZone({
     if (e.target.files && e.target.files.length > 0) {
       addFilesToQueue(Array.from(e.target.files));
     }
-    // Reset input value để có thể chọn lại cùng 1 file
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // 4. Quá trình xử lý tải lên từng tệp trong Queue
+  // 4. Quá trình xử lý: Giai đoạn 1 (Tải lên) -> Reset thanh tiến trình -> Giai đoạn 2 (AI quét)
   const processUploadItem = useCallback(
     async (item: UploadQueueItem) => {
-      // Chống gọi lặp đúp trên cùng một item
       if (processingIdsRef.current.has(item.id)) return;
       processingIdsRef.current.add(item.id);
 
       const controller = new AbortController();
       abortControllersRef.current[item.id] = controller;
 
-      // Cập nhật trạng thái đang upload
+      // Bước 1: Bắt đầu tải lên
       setQueue((prev) =>
-        prev.map((q) => (q.id === item.id ? { ...q, status: "UPLOADING", uploadProgress: 5 } : q))
+        prev.map((q) =>
+          q.id === item.id ? { ...q, status: "UPLOADING", uploadProgress: 5 } : q
+        )
       );
 
       try {
-        // Gọi API tải lên kèm theo dõi tiến trình
         const res = await alprApi.uploadVideo(
           item.file,
           (percent) => {
@@ -166,22 +262,27 @@ export function VideoUploadZone({
           controller.signal
         );
 
-        // Upload xong -> Chuyển sang PROCESSING
-        const newJob: VideoJob = {
+        // =====================================================================
+        // QUAN TRỌNG: TẢI LÊN XONG -> RESET THANH TIẾN TRÌNH VỀ 0%
+        // VÀ BẮT ĐẦU CHẠY TIẾN TRÌNH NHẬN DIỆN AI THẬT
+        // =====================================================================
+        const initialJob: VideoJob = {
           id: res.job_id,
           filename: item.filename,
           file_size_bytes: item.fileSizeBytes,
           stage: "PROCESSING",
-          stage_progress_pct: 15,
-          overall_progress_pct: 25,
-          total_frames: 3600,
-          processed_frames: 900,
-          duration_seconds: 120,
-          current_fps: 28,
-          eta_seconds: 65,
-          detected_plates_count: 12,
+          stage_progress_pct: 0,
+          overall_progress_pct: 0,
+          total_frames: 0,
+          processed_frames: 0,
+          duration_seconds: 0,
+          current_fps: 0,
+          eta_seconds: 0,
+          detected_plates_count: 0,
           created_at: new Date().toISOString(),
         };
+
+        if (onJobCreated) onJobCreated(initialJob);
 
         setQueue((prev) =>
           prev.map((q) =>
@@ -190,74 +291,17 @@ export function VideoUploadZone({
                   ...q,
                   status: "PROCESSING",
                   jobId: res.job_id,
-                  overallProgress: 25,
-                  currentFps: 28,
-                  etaSeconds: 65,
-                  detectedPlatesCount: 12,
+                  uploadProgress: 100, // Đã xong bước 1
+                  overallProgress: 0,  // RESET TIẾN TRÌNH AI VỀ 0% ĐỂ BẮT ĐẦU QUÉT
+                  totalFrames: 0,
+                  processedFrames: 0,
+                  currentFps: 0,
+                  etaSeconds: 0,
+                  detectedPlatesCount: 0,
                 }
               : q
           )
         );
-
-        if (onJobCreated) onJobCreated(newJob);
-
-        // Giả lập tiến trình AI hoàn tất có dọn dẹp interval
-        let currentPct = 25;
-        const interval = setInterval(() => {
-          currentPct += 25;
-          if (currentPct >= 100) {
-            clearInterval(interval);
-            delete simulationIntervalsRef.current[item.id];
-            processingIdsRef.current.delete(item.id);
-
-            if (onJobUpdated && res.job_id) {
-              onJobUpdated(res.job_id, {
-                stage: "COMPLETED",
-                overall_progress_pct: 100,
-                processed_frames: 3600,
-                eta_seconds: 0,
-                detected_plates_count: 26,
-              });
-            }
-
-            setQueue((prev) =>
-              prev.map((q) =>
-                q.id === item.id
-                  ? {
-                      ...q,
-                      status: "COMPLETED",
-                      overallProgress: 100,
-                      etaSeconds: 0,
-                      detectedPlatesCount: (q.detectedPlatesCount || 12) + 14,
-                    }
-                  : q
-              )
-            );
-          } else {
-            if (onJobUpdated && res.job_id) {
-              onJobUpdated(res.job_id, {
-                overall_progress_pct: currentPct,
-                processed_frames: Math.floor((3600 * currentPct) / 100),
-                eta_seconds: Math.max(0, Math.floor((100 - currentPct) * 0.7)),
-                detected_plates_count: Math.floor(currentPct * 0.35),
-              });
-            }
-
-            setQueue((prev) =>
-              prev.map((q) =>
-                q.id === item.id
-                  ? {
-                      ...q,
-                      overallProgress: currentPct,
-                      etaSeconds: Math.max(0, Math.floor((100 - currentPct) * 0.7)),
-                      detectedPlatesCount: Math.floor(currentPct * 0.35),
-                    }
-                  : q
-              )
-            );
-          }
-        }, 1000);
-        simulationIntervalsRef.current[item.id] = interval;
       } catch (err: any) {
         processingIdsRef.current.delete(item.id);
         setQueue((prev) =>
@@ -275,48 +319,42 @@ export function VideoUploadZone({
         delete abortControllersRef.current[item.id];
       }
     },
-    [onJobCreated, onJobUpdated]
+    [onJobCreated]
   );
 
-  // 5. Queue Worker Loop: Tự động bốc tệp tiếp theo khi có vị trí trống
+  // 5. Queue Worker Loop: Bốc tệp tiếp theo khi có slot trống
   useEffect(() => {
     const activeCount = queue.filter(
       (q) => q.status === "UPLOADING" || q.status === "VALIDATING"
     ).length;
 
     if (activeCount < MAX_CONCURRENT_UPLOADS) {
-      const nextItem = queue.find((q) => q.status === "QUEUED" && !processingIdsRef.current.has(q.id));
+      const nextItem = queue.find(
+        (q) => q.status === "QUEUED" && !processingIdsRef.current.has(q.id)
+      );
       if (nextItem) {
         processUploadItem(nextItem);
       }
     }
   }, [queue, processUploadItem]);
 
-  // Hủy tải lên 1 tệp
+  // Hủy tải lên
   const cancelItem = (id: string) => {
-    if (simulationIntervalsRef.current[id]) {
-      clearInterval(simulationIntervalsRef.current[id]);
-      delete simulationIntervalsRef.current[id];
-    }
     processingIdsRef.current.delete(id);
-
     if (abortControllersRef.current[id]) {
       abortControllersRef.current[id].abort();
       delete abortControllersRef.current[id];
     }
     setQueue((prev) =>
-      prev.map((q) => (q.id === id ? { ...q, status: "CANCELLED", errorMessage: "Đã hủy bởi người dùng" } : q))
+      prev.map((q) =>
+        q.id === id ? { ...q, status: "CANCELLED", errorMessage: "Đã hủy bởi người dùng" } : q
+      )
     );
   };
 
-  // Thử lại 1 tệp bị lỗi
+  // Thử lại
   const retryItem = (id: string) => {
-    if (simulationIntervalsRef.current[id]) {
-      clearInterval(simulationIntervalsRef.current[id]);
-      delete simulationIntervalsRef.current[id];
-    }
     processingIdsRef.current.delete(id);
-
     setQueue((prev) =>
       prev.map((q) =>
         q.id === id
@@ -332,14 +370,9 @@ export function VideoUploadZone({
     );
   };
 
-  // Xóa 1 tệp khỏi hàng đợi
+  // Xóa mục
   const removeItem = (id: string) => {
-    if (simulationIntervalsRef.current[id]) {
-      clearInterval(simulationIntervalsRef.current[id]);
-      delete simulationIntervalsRef.current[id];
-    }
     processingIdsRef.current.delete(id);
-
     if (abortControllersRef.current[id]) {
       abortControllersRef.current[id].abort();
       delete abortControllersRef.current[id];
@@ -347,30 +380,11 @@ export function VideoUploadZone({
     setQueue((prev) => prev.filter((q) => q.id !== id));
   };
 
-  // Thử lại tất cả các tệp lỗi
-  const retryAllFailed = () => {
-    setQueue((prev) =>
-      prev.map((q) =>
-        q.status === "ERROR"
-          ? {
-              ...q,
-              status: "QUEUED",
-              uploadProgress: 0,
-              overallProgress: 0,
-              errorMessage: undefined,
-            }
-          : q
-      )
-    );
-  };
-
-  // Xóa các tệp đã hoàn tất
+  // Xóa các mục hoàn tất
   const clearCompleted = () => {
     setQueue((prev) => prev.filter((q) => q.status !== "COMPLETED"));
   };
 
-  // Thống kê nhanh hàng đợi
-  const queuedCount = queue.filter((q) => q.status === "QUEUED").length;
   const uploadingCount = queue.filter((q) => q.status === "UPLOADING").length;
   const processingCount = queue.filter((q) => q.status === "PROCESSING").length;
   const completedCount = queue.filter((q) => q.status === "COMPLETED").length;
@@ -378,7 +392,7 @@ export function VideoUploadZone({
 
   return (
     <div className="space-y-4">
-      {/* 1. Dropzone hỗ trợ Nhiều tệp (Multiple Files Dropzone) */}
+      {/* 1. Khung Kéo thả Video */}
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -407,7 +421,7 @@ export function VideoUploadZone({
           Kéo thả một hoặc nhiều video cùng lúc vào đây
         </h4>
         <p className="text-xs text-content-muted mt-1 max-w-md mx-auto">
-          Hệ thống tự động xếp hàng đợi bất đồng bộ. Hỗ trợ MP4, MKV, AVI, MOV. Dung lượng tối đa 1GB mỗi tệp.
+          Quy trình 2 bước tự động: <b>Bước 1</b> Tải tệp lên máy chủ $\rightarrow$ <b>Bước 2</b> AI quét bóc tách biển số từng khung hình.
         </p>
 
         <div className="flex flex-wrap items-center justify-center gap-2 mt-4 text-[11px] font-mono font-semibold text-content-muted">
@@ -421,30 +435,30 @@ export function VideoUploadZone({
         </div>
       </div>
 
-      {/* 2. Khung Quản lý Hàng đợi Tải lên (Upload Queue Panel) */}
+      {/* 2. Khung Quản lý Hàng đợi & Tiến trình Đồng bộ */}
       {queue.length > 0 && (
         <div className="bg-surface border border-border rounded-bento p-5 shadow-bento space-y-3">
-          {/* Header hàng đợi và thao tác hàng loạt */}
+          {/* Header hàng đợi */}
           <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border/80">
             <div className="flex items-center gap-2">
               <ListOrdered className="w-4 h-4 text-primary" />
               <h5 className="font-heading font-bold text-xs uppercase tracking-wider text-content-primary">
-                Hàng đợi Tải lên ({queue.length} tệp)
+                Hàng đợi Xử lý ({queue.length} tệp)
               </h5>
               <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold">
                 {uploadingCount > 0 && (
-                  <span className="px-2 py-0.5 rounded-full bg-blue-50 text-primary border border-blue-200">
-                    Đang tải: {uploadingCount}
+                  <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 animate-pulse">
+                    Đang tải lên: {uploadingCount}
                   </span>
                 )}
                 {processingCount > 0 && (
-                  <span className="px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
-                    AI Quét: {processingCount}
+                  <span className="px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200 animate-pulse">
+                    AI Đang Quét: {processingCount}
                   </span>
                 )}
                 {completedCount > 0 && (
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-status-success border border-emerald-200">
-                    Xong: {completedCount}
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    Đã Xong: {completedCount}
                   </span>
                 )}
                 {errorCount > 0 && (
@@ -455,53 +469,51 @@ export function VideoUploadZone({
               </div>
             </div>
 
-            {/* Nút thao tác hàng loạt */}
-            <div className="flex items-center gap-2">
-              {errorCount > 0 && (
-                <button
-                  onClick={retryAllFailed}
-                  className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-primary hover:bg-primary-light rounded-lg border border-primary-border transition-colors"
-                >
-                  <RefreshCw className="w-3 h-3" />
-                  <span>Thử lại {errorCount} tệp lỗi</span>
-                </button>
-              )}
-              {completedCount > 0 && (
-                <button
-                  onClick={clearCompleted}
-                  className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-content-muted hover:text-content-primary hover:bg-surface-muted rounded-lg border border-border transition-colors"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  <span>Dọn mục đã xong</span>
-                </button>
-              )}
-            </div>
+            {completedCount > 0 && (
+              <button
+                onClick={clearCompleted}
+                className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-content-muted hover:text-content-primary hover:bg-surface-muted rounded-lg border border-border transition-colors"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>Dọn mục đã xong</span>
+              </button>
+            )}
           </div>
 
-          {/* Danh sách các tệp trong Hàng đợi */}
-          <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+          {/* Danh sách các tệp */}
+          <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
             {queue.map((item) => {
               const isUploading = item.status === "UPLOADING";
               const isProcessing = item.status === "PROCESSING";
               const isCompleted = item.status === "COMPLETED";
               const isError = item.status === "ERROR";
-              const isCancelled = item.status === "CANCELLED";
               const isQueued = item.status === "QUEUED";
+
+              // Tính toán phần trăm tiến trình hiển thị cho thanh đơn
+              const currentPercent = isUploading
+                ? item.uploadProgress
+                : isProcessing
+                ? item.overallProgress || 0
+                : isCompleted
+                ? 100
+                : 0;
 
               return (
                 <div
                   key={item.id}
-                  className={`p-3.5 rounded-xl border transition-all ${
+                  className={`p-4 rounded-xl border transition-all ${
                     isError
                       ? "bg-red-50/40 border-red-200"
                       : isCompleted
-                      ? "bg-emerald-50/30 border-emerald-200"
-                      : isUploading || isProcessing
+                      ? "bg-emerald-50/20 border-emerald-300 shadow-2xs"
+                      : isProcessing
+                      ? "bg-purple-50/30 border-purple-300 shadow-2xs ring-1 ring-purple-200"
+                      : isUploading
                       ? "bg-blue-50/30 border-blue-300 shadow-2xs"
                       : "bg-surface-muted border-border/80"
                   }`}
                 >
-                  {/* Dòng tiêu đề tệp & Trạng thái */}
+                  {/* Hàng 1: Tên tệp, Kích thước & Trạng thái Badge */}
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <div
@@ -509,7 +521,9 @@ export function VideoUploadZone({
                           isError
                             ? "bg-red-100 text-status-error border-red-200"
                             : isCompleted
-                            ? "bg-emerald-100 text-status-success border-emerald-200"
+                            ? "bg-emerald-100 text-emerald-700 border-emerald-300"
+                            : isProcessing
+                            ? "bg-purple-100 text-purple-700 border-purple-300"
                             : "bg-white text-primary border-slate-200"
                         }`}
                       >
@@ -517,20 +531,25 @@ export function VideoUploadZone({
                       </div>
 
                       <div className="min-w-0">
-                        <p className="font-heading font-bold text-xs text-content-primary truncate max-w-[260px] sm:max-w-md">
+                        <p className="font-heading font-bold text-xs text-content-primary truncate max-w-[240px] sm:max-w-md">
                           {item.filename}
                         </p>
-                        <p className="text-[10px] text-content-muted font-mono">
-                          {formatBytes(item.fileSizeBytes)}
-                          {item.currentFps ? ` • ${item.currentFps} FPS` : ""}
-                          {item.detectedPlatesCount
-                            ? ` • ${item.detectedPlatesCount} biển số`
-                            : ""}
+                        <p className="text-[10px] text-content-muted font-mono flex items-center gap-2 mt-0.5">
+                          <span>{formatBytes(item.fileSizeBytes)}</span>
+                          {item.currentFps ? (
+                            <span className="text-purple-700 font-semibold">• {item.currentFps} FPS</span>
+                          ) : null}
+                          {isProcessing && item.totalFrames ? (
+                            <span>• {item.processedFrames || 0}/{item.totalFrames} frames</span>
+                          ) : null}
+                          {item.detectedPlatesCount !== undefined && item.detectedPlatesCount > 0 ? (
+                            <span className="text-emerald-700 font-bold">• {item.detectedPlatesCount} biển số</span>
+                          ) : null}
                         </p>
                       </div>
                     </div>
 
-                    {/* Trạng thái Badge & Thao tác */}
+                    {/* Trạng thái Badge */}
                     <div className="flex items-center gap-2 shrink-0">
                       {isQueued && (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
@@ -538,41 +557,59 @@ export function VideoUploadZone({
                         </span>
                       )}
                       {isUploading && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-primary border border-blue-200 animate-pulse">
-                          ĐANG TẢI {item.uploadProgress}%
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-300 animate-pulse">
+                          1/2: ĐANG TẢI LÊN ({item.uploadProgress}%)
                         </span>
                       )}
                       {isProcessing && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 border border-purple-200 animate-pulse">
-                          AI QUÉT {item.overallProgress}%
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-700 border border-purple-300 animate-pulse flex items-center gap-1">
+                          <Sparkles className="w-3 h-3 text-purple-600 animate-spin" />
+                          2/2: AI ĐANG QUÉT ({item.overallProgress || 0}%)
                         </span>
                       )}
                       {isCompleted && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-status-success border border-emerald-200 flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3" /> HOÀN TẤT
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-300 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" />
+                          ĐÃ QUÉT XONG ({item.detectedPlatesCount || 0} BIỂN SỐ)
                         </span>
                       )}
                       {isError && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-status-error border border-red-200 flex items-center gap-1">
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-red-100 text-status-error border border-red-300 flex items-center gap-1">
                           <AlertTriangle className="w-3 h-3" /> LỖI
                         </span>
                       )}
-                      {isCancelled && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-600">
-                          ĐÃ HỦY
-                        </span>
-                      )}
 
-                      {/* Nút hành động */}
-                      {isError && (
+                      {/* Nút Xem Video AI trực tiếp khi xong */}
+                      {isCompleted && item.jobId && onOpenVideoModal && (
                         <button
-                          onClick={() => retryItem(item.id)}
-                          title="Thử lại tệp này"
-                          className="p-1 rounded-md text-primary hover:bg-blue-100 transition-colors"
+                          onClick={() => {
+                            onOpenVideoModal({
+                              id: item.jobId!,
+                              filename: item.filename,
+                              file_size_bytes: item.fileSizeBytes,
+                              stage: "COMPLETED",
+                              stage_progress_pct: 100,
+                              overall_progress_pct: 100,
+                              total_frames: item.totalFrames || 0,
+                              processed_frames: item.processedFrames || 0,
+                              duration_seconds: 0,
+                              current_fps: 0,
+                              eta_seconds: 0,
+                              detected_plates_count: item.detectedPlatesCount || 0,
+                              processed_video_url: item.processedVideoUrl,
+                              video_url: `/static/videos/${item.jobId}_${item.filename}`,
+                              created_at: item.createdAt,
+                            });
+                          }}
+                          className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg bg-primary text-white hover:bg-primary-hover transition-all shadow-xs"
+                          title="Mở video đã nhận diện AI"
                         >
-                          <RefreshCw className="w-3.5 h-3.5" />
+                          <Play className="w-3 h-3 fill-current" />
+                          <span>Xem Video AI</span>
                         </button>
                       )}
+
+                      {/* Nút hủy/xóa */}
                       {(isUploading || isQueued) && (
                         <button
                           onClick={() => cancelItem(item.id)}
@@ -582,10 +619,10 @@ export function VideoUploadZone({
                           <X className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {(isCompleted || isError || isCancelled) && (
+                      {(isCompleted || isError) && (
                         <button
                           onClick={() => removeItem(item.id)}
-                          title="Xóa khỏi hàng đợi"
+                          title="Xóa khỏi danh sách"
                           className="p-1 rounded-md text-content-muted hover:text-content-primary hover:bg-slate-200 transition-colors"
                         >
                           <X className="w-3.5 h-3.5" />
@@ -594,7 +631,7 @@ export function VideoUploadZone({
                     </div>
                   </div>
 
-                  {/* Thông báo lỗi chi tiết */}
+                  {/* Thông báo lỗi nếu có */}
                   {isError && item.errorMessage && (
                     <div className="mt-2 text-[11px] text-status-error font-medium flex items-center gap-1.5 bg-red-100/60 p-2 rounded-lg">
                       <AlertCircle className="w-3.5 h-3.5 shrink-0" />
@@ -602,33 +639,55 @@ export function VideoUploadZone({
                     </div>
                   )}
 
-                  {/* Thanh tiến trình (Khi đang Upload hoặc AI Processing) */}
-                  {(isUploading || isProcessing) && (
-                    <div className="mt-2.5 space-y-1">
-                      <div className="flex justify-between text-[10px] font-mono text-content-muted">
-                        <span>
-                          {isUploading
-                            ? "Đang gửi dữ liệu lên máy chủ..."
-                            : "Tiến trình AI (Chuẩn hóa 20% + YOLO/OCR 80%)"}
+                  {/* ======================================================= */}
+                  {/* THANH TIẾN TRÌNH ĐƠN (Unified Single Progress Bar)     */}
+                  {/* Khi upload xong: Reset về 0% và chạy tiếp tiến trình AI */}
+                  {/* ======================================================= */}
+                  {(isUploading || isProcessing || isCompleted) && (
+                    <div className="mt-3 space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] font-mono">
+                        <span className="font-semibold text-content-secondary flex items-center gap-1">
+                          {isUploading ? (
+                            <span className="text-blue-600 font-bold">
+                              [Bước 1/2] Đang tải tệp lên máy chủ...
+                            </span>
+                          ) : isProcessing ? (
+                            <span className="text-purple-700 font-bold flex items-center gap-1">
+                              <Sparkles className="w-3 h-3" />
+                              [Bước 2/2] AI đang quét từng frame & nhận diện biển số...
+                            </span>
+                          ) : (
+                            <span className="text-emerald-700 font-bold flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Đã hoàn tất nhận diện toàn bộ video
+                            </span>
+                          )}
                         </span>
-                        <span className="font-bold text-primary">
-                          {isUploading
-                            ? `${item.uploadProgress}%`
-                            : `${item.overallProgress}%`}
+
+                        <span
+                          className={`font-bold ${
+                            isCompleted
+                              ? "text-emerald-600"
+                              : isProcessing
+                              ? "text-purple-700"
+                              : "text-blue-600"
+                          }`}
+                        >
+                          {currentPercent}%
                         </span>
                       </div>
-                      <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+
+                      {/* Thanh Bar */}
+                      <div className="w-full bg-slate-200/90 rounded-full h-2 overflow-hidden shadow-inner">
                         <div
                           className={`h-full rounded-full transition-all duration-300 ${
-                            isUploading
-                              ? "bg-primary"
-                              : "bg-gradient-to-r from-primary to-purple-600"
+                            isCompleted
+                              ? "bg-emerald-500"
+                              : isProcessing
+                              ? "bg-gradient-to-r from-violet-600 to-indigo-600"
+                              : "bg-blue-600"
                           }`}
-                          style={{
-                            width: `${
-                              isUploading ? item.uploadProgress : item.overallProgress
-                            }%`,
-                          }}
+                          style={{ width: `${currentPercent}%` }}
                         />
                       </div>
                     </div>

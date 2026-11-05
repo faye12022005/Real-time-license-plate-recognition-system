@@ -7,6 +7,7 @@ import { alprApi } from "@/lib/api";
 import { PlateRecord, VehicleType } from "@/types";
 import { PlateBadge, VehicleBadge } from "@/components/shared/Badge";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { useRealtimeEvent } from "@/lib/useRealtime";
 import { Search, Filter, Compass, Clock, MapPin, Gauge, Database } from "lucide-react";
 
 export default function PlatesDatabasePage() {
@@ -30,6 +31,12 @@ export default function PlatesDatabasePage() {
     e.preventDefault();
     loadData();
   };
+
+  // Lắng nghe biển số mới nhận diện theo thời gian thực
+  useRealtimeEvent<PlateRecord>("plate_detected", (newPlate) => {
+    if (!newPlate || !newPlate.id) return;
+    setPlates((prev) => [newPlate, ...prev.filter((p) => p.id !== newPlate.id)]);
+  });
 
   return (
     <div className="space-y-6">

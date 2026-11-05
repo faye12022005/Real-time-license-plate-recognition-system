@@ -1,13 +1,15 @@
 """HTTP API entry point for SMART ALPR 2.0 system with interactive Swagger documentation."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config.settings import CAPTURES_DIR, PARKING_DIR, SAMPLES_DIR
 from src.database.connection import init_db
+from api.realtime import realtime_manager
 from api.routes.analytics import router as analytics_router
 from api.routes.parking import router as parking_router
 from api.routes.plates import router as plates_router
@@ -77,6 +79,7 @@ Hệ thống tích hợp **Nhận diện biển số xe tự động (ALPR)** & 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifespan handler."""
+    realtime_manager.set_loop(asyncio.get_running_loop())
     init_db()
     CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
     SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
@@ -130,6 +133,21 @@ def create_app() -> FastAPI:
     app.include_router(plates_router, include_in_schema=False)
     app.include_router(analytics_router, include_in_schema=False)
     app.include_router(training_router, include_in_schema=False)
+
+    @app.websocket("/ws")
+    @app.websocket("/api/v1/ws")
+    async def websocket_endpoint(websocket: WebSocket):
+        """Real-time live synchronization WebSocket endpoint."""
+        await realtime_manager.connect(websocket)
+        try:
+            while True:
+                msg = await websocket.receive_text()
+                if msg == "ping":
+                    await websocket.send_text("pong")
+        except WebSocketDisconnect:
+            realtime_manager.disconnect(websocket)
+        except Exception:
+            realtime_manager.disconnect(websocket)
 
     @app.get("/", tags=["Health"], summary="Trang chủ API & Chuyển hướng tới Swagger")
     @app.get("/health", tags=["Health"], summary="Kiểm tra trạng thái máy chủ")

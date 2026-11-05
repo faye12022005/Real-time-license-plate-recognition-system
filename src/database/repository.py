@@ -8,6 +8,15 @@ from src.database.connection import get_connection
 from src.utils.plate_validator import format_vietnamese_plate, normalize_plate
 
 
+def notify_realtime(event: str, data: Any = None) -> None:
+    """Safely notify realtime WebSocket manager if active."""
+    try:
+        from api.realtime import realtime_manager
+        realtime_manager.broadcast_sync(event, data if data is not None else {})
+    except Exception:
+        pass
+
+
 # ==============================================================================
 # 1. VIDEO JOBS & DETECTED PLATES REPOSITORY (Existing Flow)
 # ==============================================================================
@@ -28,6 +37,8 @@ def insert_plate(record: Dict[str, Any]) -> None:
     )
     conn.commit()
     conn.close()
+    notify_realtime("plate_detected", record)
+    notify_realtime("kpis_updated")
 
 
 def list_plates(
@@ -88,6 +99,8 @@ def insert_video_job(job: Dict[str, Any]) -> None:
     )
     conn.commit()
     conn.close()
+    notify_realtime("video_job_created", job_data)
+    notify_realtime("kpis_updated")
 
 
 def list_video_jobs() -> List[Dict[str, Any]]:
@@ -104,6 +117,32 @@ def get_video_job(job_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def delete_video_job(job_id: str) -> bool:
+    """Delete a video job, its detected plates, and notify realtime clients."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM plates WHERE job_id = :job_id", {"job_id": job_id})
+        cursor = conn.execute("DELETE FROM video_jobs WHERE id = :id", {"id": job_id})
+        deleted = cursor.rowcount > 0
+        conn.commit()
+    finally:
+        conn.close()
+
+    if deleted:
+        notify_realtime("video_job_deleted", {"job_id": job_id})
+        notify_realtime("kpis_updated")
+    return deleted
+
+
+def delete_video_jobs(job_ids: List[str]) -> int:
+    """Delete multiple video jobs. Returns number of jobs actually deleted."""
+    deleted_count = 0
+    for job_id in job_ids or []:
+        if delete_video_job(job_id):
+            deleted_count += 1
+    return deleted_count
+
+
 def update_video_job_progress(job_id: str, **kwargs: Any) -> None:
     if not kwargs:
         return
@@ -114,6 +153,9 @@ def update_video_job_progress(job_id: str, **kwargs: Any) -> None:
     conn.execute(f"UPDATE video_jobs SET {set_clause} WHERE id = :_job_id", params)
     conn.commit()
     conn.close()
+    notify_realtime("video_job_updated", {"job_id": job_id, **kwargs})
+    if kwargs.get("stage") == "COMPLETED":
+        notify_realtime("kpis_updated")
 
 
 def get_kpis() -> Dict[str, Any]:
@@ -533,7 +575,10 @@ def check_in_vehicle(
     conn.commit()
     conn.close()
 
-    return get_parking_session(session_id) or {}
+    result_session = get_parking_session(session_id) or {}
+    notify_realtime("parking_check_in", result_session)
+    notify_realtime("kpis_updated")
+    return result_session
 
 
 def check_out_vehicle(
@@ -672,7 +717,10 @@ def check_out_vehicle(
     conn.commit()
     conn.close()
 
-    return get_parking_session(sid) or {}
+    result_session = get_parking_session(sid) or {}
+    notify_realtime("parking_check_out", result_session)
+    notify_realtime("kpis_updated")
+    return result_session
 
 
 def get_parking_session(session_id: str) -> Optional[Dict[str, Any]]:
