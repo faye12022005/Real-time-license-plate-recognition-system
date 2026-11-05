@@ -72,6 +72,7 @@ async def upload_video(
         "eta_seconds": 0.0,
         "detected_plates_count": 0,
         "video_url": f"/static/videos/{safe_filename}",
+        "processed_video_url": None,
         "error_message": None,
         "created_at": now_iso,
         "completed_at": None,
@@ -97,3 +98,11 @@ def get_job_by_id(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Không tìm thấy tác vụ video")
     return job
+
+
+@router.get("/jobs/{job_id}/plates")
+def get_plates_by_job_id(job_id: str):
+    """Retrieve all plate records detected in a specific video job."""
+    from src.database.repository import list_plates
+    return list_plates(job_id=job_id)
+

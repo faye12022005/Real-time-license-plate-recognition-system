@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS video_jobs (
     eta_seconds FLOAT DEFAULT NULL,
     detected_plates_count INT DEFAULT NULL,
     video_url VARCHAR(512) DEFAULT NULL,
+    processed_video_url VARCHAR(512) DEFAULT NULL,
     error_message TEXT DEFAULT NULL,
     created_at VARCHAR(64) DEFAULT NULL,
     completed_at VARCHAR(64) DEFAULT NULL

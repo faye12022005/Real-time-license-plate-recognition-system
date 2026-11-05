@@ -170,6 +170,7 @@ BEGIN
         eta_seconds           FLOAT DEFAULT 0.0,
         detected_plates_count INT DEFAULT 0,
         video_url             NVARCHAR(MAX) NULL,
+        processed_video_url   NVARCHAR(MAX) NULL,
         error_message         NVARCHAR(MAX) NULL,
         created_at            DATETIME2(3) DEFAULT SYSDATETIME(),
         completed_at          DATETIME2(3) NULL

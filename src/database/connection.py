@@ -429,6 +429,11 @@ def init_mysql_tables(raw_conn: Any) -> None:
 
     if not missing_tables:
         print(f"[DATABASE] [MySQL] Bảng cơ sở dữ liệu đã tồn tại đầy đủ ({len(existing_tables)} bảng: {', '.join(sorted(existing_tables))}).")
+        try:
+            cur.execute("ALTER TABLE video_jobs ADD COLUMN processed_video_url VARCHAR(512) DEFAULT NULL;")
+            raw_conn.commit()
+        except Exception:
+            pass
         cur.close()
         return
 
@@ -468,6 +473,11 @@ def init_sqlserver_tables(raw_conn: Any) -> None:
 
     if not missing_tables:
         print(f"[DATABASE] [SQL Server] Bảng cơ sở dữ liệu đã tồn tại đầy đủ ({len(existing_tables)} bảng: {', '.join(sorted(existing_tables))}).")
+        try:
+            cursor.execute("IF COL_LENGTH('video_jobs', 'processed_video_url') IS NULL ALTER TABLE video_jobs ADD processed_video_url NVARCHAR(MAX) NULL;")
+            raw_conn.commit()
+        except Exception:
+            pass
         cursor.close()
         return
 
@@ -531,6 +541,7 @@ def create_sqlite_schema(conn: sqlite3.Connection) -> None:
         eta_seconds REAL,
         detected_plates_count INTEGER,
         video_url TEXT,
+        processed_video_url TEXT,
         error_message TEXT,
         created_at TEXT,
         completed_at TEXT
@@ -641,6 +652,11 @@ def init_sqlite_tables(conn: sqlite3.Connection) -> None:
 
     if not missing_tables:
         print(f"[DATABASE] [SQLite] Bảng cơ sở dữ liệu đã tồn tại đầy đủ ({len(existing_tables)} bảng: {', '.join(sorted(existing_tables))}).")
+        try:
+            conn.execute("ALTER TABLE video_jobs ADD COLUMN processed_video_url TEXT;")
+            conn.commit()
+        except Exception:
+            pass
         return
 
     print(f"[DATABASE] [SQLite] Phát hiện chưa có hoặc thiếu bảng. Thiếu: {missing_tables}. Đang tự động tạo bảng...")

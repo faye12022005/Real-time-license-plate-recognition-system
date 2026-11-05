@@ -1,15 +1,18 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
 import { alprApi } from "@/lib/api";
 import { VideoJob } from "@/types";
 import { VideoUploadZone } from "@/components/upload/VideoUploadZone";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Film, FileVideo, RotateCcw } from "lucide-react";
+import { ProcessedVideoModal } from "@/components/video/ProcessedVideoModal";
+import { Film, FileVideo, RotateCcw, Play, Sparkles, ExternalLink } from "lucide-react";
 
 export default function UploadPage() {
   const [jobs, setJobs] = useState<VideoJob[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedJobForVideo, setSelectedJobForVideo] = useState<VideoJob | null>(null);
 
   const fetchJobs = () => {
     setIsRefreshing(true);
@@ -90,14 +93,23 @@ export default function UploadPage() {
                   <th className="py-3 px-4">Biển Số Nhận Diện</th>
                   <th className="py-3 px-4">Thời Gian</th>
                   <th className="py-3 px-4 text-right">Tốc Độ AI</th>
+                  <th className="py-3 px-4 text-center">Thao Tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
                 {jobs.map((job) => (
                   <tr key={job.id} className="hover:bg-surface-muted/50 transition-colors">
-                    <td className="py-3 px-4 font-semibold text-content-primary flex items-center gap-2">
-                      <FileVideo className="w-4 h-4 text-primary shrink-0" />
-                      <span className="truncate max-w-[220px]">{job.filename}</span>
+                    <td className="py-3 px-4 font-semibold text-content-primary">
+                      <button
+                        onClick={() => setSelectedJobForVideo(job)}
+                        className="flex items-center gap-2 text-left hover:text-primary transition-colors group"
+                        title="Bấm để xem video này"
+                      >
+                        <FileVideo className="w-4 h-4 text-primary shrink-0 group-hover:scale-110 transition-transform" />
+                        <span className="truncate max-w-[200px] underline-offset-2 group-hover:underline">
+                          {job.filename}
+                        </span>
+                      </button>
                     </td>
                     <td className="py-3 px-4">
                       <span
@@ -133,6 +145,25 @@ export default function UploadPage() {
                     <td className="py-3 px-4 text-right font-mono font-semibold text-content-secondary">
                       {job.current_fps} FPS
                     </td>
+                    <td className="py-3 px-4 text-center">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <button
+                          onClick={() => setSelectedJobForVideo(job)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-primary text-white hover:bg-primary-hover text-[11px] font-semibold transition-all shadow-2xs hover:shadow-xs active:scale-95"
+                          title="Mở trình phát xem video đã nhận diện AI"
+                        >
+                          <Play className="w-3 h-3 fill-current" />
+                          <span>Xem Video AI</span>
+                        </button>
+                        <Link
+                          href={`/plates?job_id=${job.id}`}
+                          className="inline-flex items-center p-1 rounded-lg text-content-muted hover:text-content-primary hover:bg-surface-muted transition-colors border border-border"
+                          title="Xem toàn bộ biển số đã bóc tách"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </Link>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -146,6 +177,12 @@ export default function UploadPage() {
           />
         )}
       </div>
+
+      {/* Modal Phát Video Đã Xử Lý AI */}
+      <ProcessedVideoModal
+        job={selectedJobForVideo}
+        onClose={() => setSelectedJobForVideo(null)}
+      />
     </div>
   );
 }

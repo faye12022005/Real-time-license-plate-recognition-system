@@ -70,18 +70,21 @@ def trace_plate(plate_number: str) -> List[Dict[str, Any]]:
 
 def insert_video_job(job: Dict[str, Any]) -> None:
     conn = get_connection()
+    job_data = dict(job)
+    if "processed_video_url" not in job_data:
+        job_data["processed_video_url"] = None
     conn.execute(
         """
         INSERT OR REPLACE INTO video_jobs (
             id, filename, file_size_bytes, stage, stage_progress_pct, overall_progress_pct,
             total_frames, processed_frames, duration_seconds, current_fps, eta_seconds,
-            detected_plates_count, video_url, error_message, created_at, completed_at
+            detected_plates_count, video_url, processed_video_url, error_message, created_at, completed_at
         ) VALUES (:id, :filename, :file_size_bytes, :stage, :stage_progress_pct,
                   :overall_progress_pct, :total_frames, :processed_frames, :duration_seconds,
-                  :current_fps, :eta_seconds, :detected_plates_count, :video_url,
+                  :current_fps, :eta_seconds, :detected_plates_count, :video_url, :processed_video_url,
                   :error_message, :created_at, :completed_at)
         """,
-        job,
+        job_data,
     )
     conn.commit()
     conn.close()

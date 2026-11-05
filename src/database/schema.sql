@@ -147,6 +147,7 @@ CREATE TABLE IF NOT EXISTS video_jobs (
     eta_seconds           REAL DEFAULT 0.0,              -- Thời gian dự kiến còn lại (giây)
     detected_plates_count INTEGER DEFAULT 0,             -- Số lượng biển số xe đã phát hiện
     video_url             TEXT,                          -- Đường dẫn stream xem lại video (/static/videos/...)
+    processed_video_url   TEXT,                          -- Đường dẫn video đã nhận diện AI vẽ bounding box (/static/videos/...)
     error_message         TEXT,                          -- Nội dung thông báo lỗi nếu thất bại
     created_at            TEXT DEFAULT (datetime('now', 'localtime')),
     completed_at          TEXT                           -- Thời điểm hoàn tất xử lý

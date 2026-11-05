@@ -31,6 +31,7 @@ export interface VideoJob {
   eta_seconds: number;
   detected_plates_count: number;
   video_url?: string;
+  processed_video_url?: string;
   error_message?: string;
   created_at: string;
   completed_at?: string;
