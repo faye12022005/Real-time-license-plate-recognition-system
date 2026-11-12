@@ -1,0 +1,70 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Test / lint / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ---- IDE / OS ----
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Runtime data ----
+data/alpr.db
+data/alpr.db-*
+data/captures/*
+!data/captures/.gitkeep
+data/sample_videos/*
+!data/sample_videos/.gitkeep
+
+# Generated recognition output (annotated videos, crops, JSON/CSV)
+output/
+
+# ---- Frontend (Next.js / Node) ----
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.turbo/
+frontend/coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ---- Misc ----
+*.log
