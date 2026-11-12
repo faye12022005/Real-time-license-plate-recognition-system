@@ -1,4 +1,4 @@
-"""Tests for SQLite persistence."""
+"""Tests for MySQL persistence."""
 
 from __future__ import annotations
 
@@ -40,9 +40,8 @@ def make_record(record_id: str = "rec-1", plate: str = "51F88234") -> PlateRecor
     )
 
 
-def test_repository_persists_and_queries(tmp_path) -> None:
-    db_path = tmp_path / "alpr.db"
-    repository = PlateRepository(db_path)
+def test_repository_persists_and_queries(mysql_database) -> None:
+    repository = PlateRepository(mysql_database)
     repository.save_job(make_job())
     repository.save_record(make_record())
 

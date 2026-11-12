@@ -1,5 +1,6 @@
 """Application settings for the ALPR system."""
 
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -9,7 +10,14 @@ CAPTURES_DIR = DATA_DIR / "captures"
 SAMPLE_VIDEOS_DIR = DATA_DIR / "sample_videos"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
-DATABASE_PATH = DATA_DIR / "alpr.db"
+MYSQL_HOST = os.getenv("ALPR_MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT = int(os.getenv("ALPR_MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("ALPR_MYSQL_USER", "root")
+MYSQL_PASSWORD = os.getenv("ALPR_MYSQL_PASSWORD", "")
+MYSQL_DATABASE = os.getenv("ALPR_MYSQL_DATABASE", "alpr")
+MYSQL_CHARSET = "utf8mb4"
+
+LEGACY_SQLITE_PATH = DATA_DIR / "alpr.db"
 
 VEHICLE_MODEL_PATH = MODELS_DIR / "vehicle_detector.pt"
 PLATE_MODEL_PATH = MODELS_DIR / "plate_detector.pt"

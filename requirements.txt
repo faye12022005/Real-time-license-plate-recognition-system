@@ -8,6 +8,7 @@ easyocr>=1.7.2
 numpy>=1.26
 torch>=2.2
 torchvision>=0.17
+PyMySQL>=1.1
 
 # Development / tests
 pytest>=8.0

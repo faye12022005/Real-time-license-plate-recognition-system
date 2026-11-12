@@ -87,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum consistent OCR votes for a track.",
     )
     parser.add_argument("--no-annotated", action="store_true", help="Do not write annotated video.")
-    parser.add_argument("--no-db", action="store_true", help="Do not persist results to SQLite.")
+    parser.add_argument("--no-db", action="store_true", help="Do not persist results to MySQL.")
     parser.add_argument("--no-crops", action="store_true", help="Do not save plate crop images.")
     parser.add_argument("--display", action="store_true", help="Show processing window (press q to stop).")
     parser.add_argument("--json", action="store_true", help="Print a JSON summary to stdout.")

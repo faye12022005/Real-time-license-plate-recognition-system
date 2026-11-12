@@ -69,8 +69,71 @@ output/<ten_video>/
 └── crops/                      # Ảnh crop biển số tốt nhất cho mỗi track
 ```
 
-Kết quả được lưu vào SQLite tại `data/alpr.db` (bảng `jobs` và `plate_records`) trừ khi
-dùng `--no-db`. Có thể truy vấn lại bằng `PlateRepository.trace()` hoặc `kpis()`.
+Kết quả được lưu vào MySQL (bảng `jobs` và `plate_records`) trừ khi dùng `--no-db`.
+Có thể truy vấn lại bằng `PlateRepository.trace()` hoặc `kpis()`.
+
+## Kết nối database (MySQL)
+
+Yêu cầu MySQL 8.0+ hoặc MariaDB tương thích. Driver `PyMySQL` đã nằm trong
+`requirements.txt`.
+
+Cấu hình bằng biến môi trường (giá trị trong ngoặc là mặc định):
+
+| Biến | Ý nghĩa |
+|---|---|
+| `ALPR_MYSQL_HOST` | Host MySQL (`127.0.0.1`) |
+| `ALPR_MYSQL_PORT` | Cổng MySQL (`3306`) |
+| `ALPR_MYSQL_USER` | Tài khoản (`root`) |
+| `ALPR_MYSQL_PASSWORD` | Mật khẩu (rỗng) |
+| `ALPR_MYSQL_DATABASE` | Tên database (`alpr`) |
+
+Ví dụ trên PowerShell:
+
+```powershell
+$env:ALPR_MYSQL_HOST = "127.0.0.1"
+$env:ALPR_MYSQL_PORT = "3306"
+$env:ALPR_MYSQL_USER = "alpr"
+$env:ALPR_MYSQL_PASSWORD = "mat-khau"
+$env:ALPR_MYSQL_DATABASE = "alpr"
+```
+
+Database và hai bảng chính được tạo tự động nếu tài khoản có quyền `CREATE`:
+
+```powershell
+# Khởi tạo database/bảng
+python -c "from src.database.connection import init_db; init_db(); print('Database ready')"
+
+# Kiểm tra schema và dữ liệu hiện có
+python -c "from src.database.repository import PlateRepository; print(PlateRepository().kpis())"
+```
+
+Trong mã Python, tạo repository bằng `PlateRepository()` để tự động tạo database và
+các bảng nếu chưa tồn tại:
+
+```python
+from src.database.repository import PlateRepository
+
+repository = PlateRepository()
+records = repository.list_records(limit=50)
+```
+
+Có thể trỏ sang database khác bằng cách truyền tên database:
+
+```python
+repository = PlateRepository("alpr_test")
+```
+
+### Chuyển dữ liệu từ SQLite cũ
+
+Nếu còn file `data/alpr.db` từ phiên bản SQLite, chạy script migration (idempotent,
+dùng upsert nên có thể chạy lại):
+
+```powershell
+python scripts/migrate_sqlite_to_mysql.py
+
+# Hoặc chỉ định nguồn/đích
+python scripts/migrate_sqlite_to_mysql.py --sqlite data\alpr.db --database alpr
+```
 
 ## Cấu trúc
 
@@ -81,11 +144,16 @@ dùng `--no-db`. Có thể truy vấn lại bằng `PlateRepository.trace()` ho�
 - `src/pipeline/stream_reader.py` — đọc video bằng thread riêng.
 - `src/pipeline/alpr_pipeline.py` — orchestration, voting, xuất kết quả.
 - `src/utils/plate_validator.py` — chuẩn hoá, sửa lỗi, format biển số VN và mã tỉnh.
-- `src/database/` — SQLite connection + repository.
-- `tests/` — unit test cho validator, OCR fusion, detector helper, tracker.
+- `src/database/` — MySQL connection + repository.
+- `scripts/migrate_sqlite_to_mysql.py` — chuyển dữ liệu từ SQLite cũ sang MySQL.
+- `tests/` — unit test cho validator, OCR fusion, detector helper, tracker; test DB
+  tự skip nếu không kết nối được MySQL.
 
 ## Kiểm thử
 
 ```powershell
 python -m pytest -q
 ```
+
+Test database dùng database riêng `ALPR_TEST_MYSQL_DATABASE` (mặc định `alpr_test`) và
+tự động skip nếu không kết nối được MySQL.
