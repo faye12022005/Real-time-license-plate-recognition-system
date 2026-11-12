@@ -8,6 +8,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = DATA_DIR / "models"
 CAPTURES_DIR = DATA_DIR / "captures"
 SAMPLE_VIDEOS_DIR = DATA_DIR / "sample_videos"
+UPLOAD_DIR = DATA_DIR / "uploads"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
 MYSQL_HOST = os.getenv("ALPR_MYSQL_HOST", "127.0.0.1")
@@ -58,6 +59,10 @@ TRACK_MAX_AGE = 30
 MIN_PLATE_VOTES = 2
 HIGH_CONFIDENCE_ACCEPT = 0.75
 
+STREAM_QUEUE_SIZE = 32
+STREAM_RECONNECT_ATTEMPTS = 10
+STREAM_RECONNECT_DELAY = 1.0
+
 SAVE_CROPS = True
 SAVE_ANNOTATED_VIDEO = True
 JPEG_QUALITY = 92
@@ -65,5 +70,12 @@ JPEG_QUALITY = 92
 
 def ensure_directories() -> None:
     """Create runtime directories if they do not exist."""
-    for directory in (DATA_DIR, MODELS_DIR, CAPTURES_DIR, SAMPLE_VIDEOS_DIR, OUTPUT_DIR):
+    for directory in (
+        DATA_DIR,
+        MODELS_DIR,
+        CAPTURES_DIR,
+        SAMPLE_VIDEOS_DIR,
+        UPLOAD_DIR,
+        OUTPUT_DIR,
+    ):
         directory.mkdir(parents=True, exist_ok=True)

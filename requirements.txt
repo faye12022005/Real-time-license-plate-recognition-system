@@ -1,4 +1,4 @@
-# Runtime dependencies for the offline ALPR pipeline.
+# Runtime dependencies for the ALPR pipeline and web dashboard.
 # CUDA users should install the matching torch/torchvision build first:
 # https://pytorch.org/get-started/locally/
 
@@ -9,6 +9,10 @@ numpy>=1.26
 torch>=2.2
 torchvision>=0.17
 PyMySQL>=1.1
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
 
 # Development / tests
 pytest>=8.0
+httpx>=0.27

@@ -1,17 +1,18 @@
-"""Detector -> OCR -> tracker orchestration for offline video files."""
+"""Detector -> OCR -> tracker orchestration for files and live cameras."""
 
 from __future__ import annotations
 
 import csv
 import json
 import re
+import threading
 import time
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -42,8 +43,22 @@ from src.utils.plate_validator import (
     is_valid_plate,
     province_name,
 )
+from src.utils.source import camera_label, redact_source, safe_filename
 
 LOGGER = get_logger(__name__)
+
+
+def _notify_job(
+    callback: Callable[[VideoJob], None] | None,
+    job: VideoJob,
+) -> None:
+    """Invoke an optional job progress callback without breaking processing."""
+    if callback is None:
+        return
+    try:
+        callback(job)
+    except Exception as exc:  # noqa: BLE001 - callbacks must not abort the job
+        LOGGER.debug("Job callback failed: %s", exc)
 
 
 @dataclass
@@ -61,6 +76,8 @@ class TrackState:
     best_crop: Optional[np.ndarray] = None
     first_pts_ms: int = 0
     last_pts_ms: int = 0
+    last_frame_index: int = 0
+    emitted: bool = False
     vehicle_type: str = "car"
     plate_type: str = "white"
     source: str = ""
@@ -161,13 +178,16 @@ class ALPRPipeline:
         save_annotated: bool = True,
         display: bool = False,
         save_db: bool = True,
+        job_id: str | None = None,
+        progress_callback: Callable[[VideoJob], None] | None = None,
+        display_name: str | None = None,
     ) -> ProcessingResult:
         """Process one video file and return validated plate records."""
         video_path = Path(video_path).resolve()
         if not video_path.exists():
             raise FileNotFoundError(f"Video not found: {video_path}")
 
-        job_id = f"job-{int(time.time() * 1000)}"
+        job_id = job_id or f"job-{int(time.time() * 1000)}"
         default_output = settings.OUTPUT_DIR / f"{video_path.stem}_{job_id}"
         output_path = Path(output_dir).resolve() if output_dir else default_output
         crops_dir = output_path / "crops"
@@ -176,7 +196,7 @@ class ALPRPipeline:
         created_at = datetime.now(timezone.utc).isoformat()
         job = VideoJob(
             id=job_id,
-            filename=video_path.name,
+            filename=display_name or video_path.name,
             file_size_bytes=video_path.stat().st_size,
             stage="PROCESSING",
             created_at=created_at,
@@ -195,6 +215,7 @@ class ALPRPipeline:
         reader = StreamReader(video_path)
         job.total_frames = reader.frame_count
         job.duration_seconds = reader.duration_seconds
+        _notify_job(progress_callback, job)
 
         output_video: Optional[Path] = None
         writer: Optional[cv2.VideoWriter] = None
@@ -261,6 +282,7 @@ class ALPRPipeline:
                         current_fps,
                         format_seconds(job.eta_seconds),
                     )
+                    _notify_job(progress_callback, job)
                     last_report = now
         finally:
             reader.stop()
@@ -288,6 +310,7 @@ class ALPRPipeline:
         job.eta_seconds = 0.0
         job.detected_plates_count = len(records)
         job.completed_at = datetime.now(timezone.utc).isoformat()
+        _notify_job(progress_callback, job)
 
         results_json = output_path / "results.json"
         results_csv = output_path / "results.csv"
@@ -316,22 +339,328 @@ class ALPRPipeline:
             results_csv=results_csv,
         )
 
+    def process_camera(
+        self,
+        source: str | int,
+        output_dir: str | Path | None = None,
+        save_annotated: bool = False,
+        display: bool = True,
+        save_db: bool = True,
+        max_frames: int | None = None,
+        duration_seconds: float | None = None,
+        reconnect_attempts: int = settings.STREAM_RECONNECT_ATTEMPTS,
+        camera_name: str | None = None,
+        stop_event: threading.Event | None = None,
+        frame_callback: Callable[[np.ndarray], None] | None = None,
+        record_callback: Callable[[list[PlateRecord]], None] | None = None,
+    ) -> ProcessingResult:
+        """Process a live camera/stream and emit plate records as they are confirmed.
+
+        ``stop_event`` lets a caller stop the loop externally. ``frame_callback``
+        receives every annotated frame (for MJPEG/WebSocket streaming) and
+        ``record_callback`` is notified whenever new records are confirmed.
+        """
+        job_id = f"job-{int(time.time() * 1000)}"
+        label = camera_label(source, camera_name)
+        output_path = (
+            Path(output_dir).resolve()
+            if output_dir
+            else settings.OUTPUT_DIR / f"{label}_{job_id}"
+        )
+        crops_dir = output_path / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        source_url = redact_source(source)
+        job = VideoJob(
+            id=job_id,
+            filename=label,
+            file_size_bytes=0,
+            stage="PROCESSING",
+            created_at=created_at,
+            video_url=source_url,
+        )
+
+        repository: Optional[PlateRepository] = None
+        if save_db:
+            try:
+                repository = PlateRepository()
+                repository.save_job(job)
+            except Exception as exc:  # noqa: BLE001 - persistence is optional
+                LOGGER.warning("Database persistence disabled: %s", exc)
+                repository = None
+
+        reader = StreamReader(
+            source,
+            reconnect_attempts=reconnect_attempts,
+            drop_old_frames=True,
+        )
+        job.total_frames = reader.frame_count
+        job.duration_seconds = reader.duration_seconds
+
+        output_video: Optional[Path] = (
+            output_path / f"{label}_annotated.mp4" if save_annotated else None
+        )
+        writer: Optional[cv2.VideoWriter] = None
+        writer_failed = False
+
+        states: dict[int, TrackState] = {}
+        records: list[PlateRecord] = []
+        processed_frames = 0
+        started_at = time.perf_counter()
+        last_report = started_at
+        stopped = False
+
+        LOGGER.info(
+            "Starting real-time camera %s (fps=%.1f, reconnect=%s)",
+            label,
+            reader.fps,
+            reconnect_attempts,
+        )
+
+        reader.start()
+        try:
+            for frame_index, frame in enumerate(reader.frames()):
+                if stop_event is not None and stop_event.is_set():
+                    stopped = True
+                    break
+                if (
+                    max_frames is not None
+                    and max_frames > 0
+                    and frame_index >= max_frames
+                ):
+                    break
+                if (
+                    duration_seconds is not None
+                    and duration_seconds > 0
+                    and time.perf_counter() - started_at >= duration_seconds
+                ):
+                    break
+
+                processed_frames = frame_index + 1
+
+                if frame_index % self.stride == 0:
+                    self._process_frame(
+                        frame,
+                        frame_index,
+                        reader.fps,
+                        states,
+                        pts_ms=int(round((time.perf_counter() - started_at) * 1000.0)),
+                    )
+                    new_records = self._collect_realtime_records(
+                        states=states,
+                        job=job,
+                        video_source=source_url,
+                        crops_dir=crops_dir,
+                    )
+                    if new_records:
+                        records.extend(new_records)
+                        self._persist_records(repository, new_records)
+                        if record_callback is not None:
+                            record_callback(new_records)
+                        LOGGER.info(
+                            "New plate(s): %s",
+                            ", ".join(record.plate_display for record in new_records),
+                        )
+
+                if frame_callback is not None:
+                    try:
+                        frame_callback(frame)
+                    except Exception as exc:  # noqa: BLE001 - streaming is best effort
+                        LOGGER.debug("Frame callback failed: %s", exc)
+
+                if save_annotated and writer is None and not writer_failed:
+                    height, width = frame.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(
+                        str(output_video), fourcc, reader.fps, (width, height)
+                    )
+                    if not writer.isOpened():
+                        LOGGER.warning(
+                            "Could not open video writer for %s", output_video
+                        )
+                        writer = None
+                        writer_failed = True
+                        output_video = None
+
+                if writer is not None:
+                    writer.write(frame)
+
+                if display:
+                    try:
+                        cv2.imshow("ALPR Camera", frame)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            stopped = True
+                            break
+                    except cv2.error:
+                        display = False
+
+                now = time.perf_counter()
+                if now - last_report >= 2.0:
+                    elapsed = max(1e-6, now - started_at)
+                    job.processed_frames = processed_frames
+                    job.current_fps = processed_frames / elapsed
+                    LOGGER.info(
+                        "Live frame %d | %.1f fps | %d plate(s) confirmed",
+                        processed_frames,
+                        job.current_fps,
+                        len(records),
+                    )
+                    last_report = now
+        except KeyboardInterrupt:
+            stopped = True
+            LOGGER.warning("Real-time camera interrupted by user.")
+        finally:
+            reader.stop()
+            if writer is not None:
+                writer.release()
+            if display:
+                try:
+                    cv2.destroyAllWindows()
+                except cv2.error:
+                    pass
+
+        remaining_states = {
+            track_id: state
+            for track_id, state in states.items()
+            if not state.emitted
+        }
+        if remaining_states:
+            final_records = self._build_records(
+                states=remaining_states,
+                job=job,
+                video_path=source_url,
+                crops_dir=crops_dir,
+            )
+            if final_records:
+                records.extend(final_records)
+                self._persist_records(repository, final_records)
+                if record_callback is not None:
+                    record_callback(final_records)
+
+        records.sort(key=lambda record: (record.pts_ms, record.plate_number))
+
+        elapsed = max(1e-6, time.perf_counter() - started_at)
+        job.stage = "STOPPED" if stopped else "COMPLETED"
+        job.stage_progress_pct = 100.0
+        job.overall_progress_pct = 100.0
+        job.processed_frames = processed_frames
+        job.current_fps = processed_frames / elapsed
+        job.eta_seconds = 0.0
+        job.detected_plates_count = len(records)
+        job.completed_at = datetime.now(timezone.utc).isoformat()
+
+        results_json = output_path / "results.json"
+        results_csv = output_path / "results.csv"
+        self._write_results(results_json, results_csv, job, records)
+
+        if repository is not None:
+            try:
+                repository.save_job(job)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Could not persist camera job: %s", exc)
+
+        LOGGER.info(
+            "Camera %s stopped after %.1fs | %d plate record(s) | output: %s",
+            label,
+            elapsed,
+            len(records),
+            output_path,
+        )
+        return ProcessingResult(
+            job=job,
+            records=records,
+            output_dir=output_path,
+            output_video=output_video,
+            results_json=results_json,
+            results_csv=results_csv,
+        )
+
+    def _collect_realtime_records(
+        self,
+        states: dict[int, TrackState],
+        job: VideoJob,
+        video_source: str,
+        crops_dir: Path,
+    ) -> list[PlateRecord]:
+        """Emit records for tracks that reached the support threshold and drop expired state."""
+        active_tracks = set(self.tracker.tracks.keys())
+        eligible: dict[int, TrackState] = {}
+
+        for track_id, state in list(states.items()):
+            is_active = track_id in active_tracks
+            if state.emitted:
+                if not is_active:
+                    states.pop(track_id, None)
+                continue
+            if self._is_candidate_ready(state):
+                eligible[track_id] = state
+            elif not is_active:
+                states.pop(track_id, None)
+
+        if not eligible:
+            return []
+
+        records = self._build_records(
+            states=eligible,
+            job=job,
+            video_path=video_source,
+            crops_dir=crops_dir,
+        )
+        for track_id, state in eligible.items():
+            state.emitted = True
+            if track_id not in active_tracks:
+                states.pop(track_id, None)
+        return records
+
+    def _is_candidate_ready(self, state: TrackState) -> bool:
+        if not state.votes:
+            return False
+        plate_number = max(
+            state.votes,
+            key=lambda candidate: (
+                state.vote_scores.get(candidate, 0.0)
+                / max(1, state.votes.get(candidate, 1)),
+                state.votes.get(candidate, 0),
+            ),
+        )
+        votes = state.votes.get(plate_number, 0)
+        average_confidence = state.vote_scores.get(plate_number, 0.0) / max(1, votes)
+        return (
+            votes >= self.min_votes
+            or average_confidence >= self.high_confidence_accept
+        )
+
+    @staticmethod
+    def _persist_records(
+        repository: Optional[PlateRepository],
+        records: list[PlateRecord],
+    ) -> None:
+        if repository is None or not records:
+            return
+        try:
+            repository.save_records(records)
+        except Exception as exc:  # noqa: BLE001 - keep the camera running
+            LOGGER.warning("Could not persist real-time records: %s", exc)
+
     def _process_frame(
         self,
         frame: np.ndarray,
         frame_index: int,
         fps: float,
         states: dict[int, TrackState],
+        pts_ms: int | None = None,
     ) -> None:
-        vehicle_detections = (
-            self.vehicle_detector.predict(frame) if self.vehicle_detector else []
-        )
         plate_detections = self.plate_detector.predict(frame)
+        matches = self.tracker.update(plate_detections, frame_index)
         if not plate_detections:
             return
 
-        matches = self.tracker.update(plate_detections, frame_index)
-        pts_ms = int(round(frame_index / fps * 1000.0)) if fps > 0 else 0
+        vehicle_detections = (
+            self.vehicle_detector.predict(frame) if self.vehicle_detector else []
+        )
+        if pts_ms is None:
+            pts_ms = int(round(frame_index / fps * 1000.0)) if fps > 0 else 0
 
         for track, detection in matches:
             crop = crop_with_padding(frame, detection.bbox, pad_ratio=0.15)
@@ -351,6 +680,7 @@ class ALPRPipeline:
             if state is None:
                 state = TrackState(track_id=track.track_id, first_pts_ms=pts_ms)
                 states[track.track_id] = state
+            state.last_frame_index = frame_index
 
             crop_quality = quality_score(crop)
             combined_confidence = self._combined_confidence(detection.confidence, ocr_result)
@@ -402,7 +732,7 @@ class ALPRPipeline:
         self,
         states: dict[int, TrackState],
         job: VideoJob,
-        video_path: Path,
+        video_path: str | Path,
         crops_dir: Path,
     ) -> list[PlateRecord]:
         candidate_groups: dict[str, list[tuple[TrackState, int, float]]] = defaultdict(list)

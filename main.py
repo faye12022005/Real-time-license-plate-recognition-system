@@ -12,6 +12,7 @@ from pathlib import Path
 from config import settings
 from src.pipeline.alpr_pipeline import ALPRPipeline
 from src.utils.logger import configure_logging, get_logger
+from src.utils.source import is_camera_source, parse_camera_source, redact_source
 
 LOGGER = get_logger(__name__)
 
@@ -22,11 +23,49 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alpr",
         description=(
-            "Offline license plate recognition pipeline using the trained "
-            "vehicle, plate and character detector models."
+            "Real-time and offline license plate recognition pipeline using the "
+            "trained vehicle, plate and character detector models."
         ),
     )
-    parser.add_argument("source", help="Video file or directory containing videos.")
+    parser.add_argument(
+        "source",
+        nargs="?",
+        help="Video file, directory containing videos, camera index (0) or stream URL.",
+    )
+    parser.add_argument(
+        "--camera",
+        metavar="SOURCE",
+        default=None,
+        help="Run in real-time mode: webcam index (e.g. 0) or RTSP/HTTP stream URL.",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=None,
+        help="Stop camera processing after N frames (default: unlimited).",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="Stop camera processing after N seconds (default: unlimited).",
+    )
+    parser.add_argument(
+        "--reconnect-attempts",
+        type=int,
+        default=settings.STREAM_RECONNECT_ATTEMPTS,
+        help="Reconnect attempts for live streams; 0 disables, -1 means unlimited.",
+    )
+    parser.add_argument(
+        "--no-display",
+        action="store_true",
+        help="Do not open the preview window in camera mode.",
+    )
+    parser.add_argument(
+        "--save-video",
+        action="store_true",
+        help="Save the annotated video while running in camera mode.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -89,7 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-annotated", action="store_true", help="Do not write annotated video.")
     parser.add_argument("--no-db", action="store_true", help="Do not persist results to MySQL.")
     parser.add_argument("--no-crops", action="store_true", help="Do not save plate crop images.")
-    parser.add_argument("--display", action="store_true", help="Show processing window (press q to stop).")
+    parser.add_argument(
+        "--display",
+        action="store_true",
+        help="Show video window in file mode (camera preview is on by default).",
+    )
     parser.add_argument("--json", action="store_true", help="Print a JSON summary to stdout.")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     return parser
@@ -112,6 +155,30 @@ def resolve_model_paths(args: argparse.Namespace) -> tuple[Path, Path | None, Pa
     return plate_model, vehicle_model, char_model
 
 
+def build_pipeline(args: argparse.Namespace) -> ALPRPipeline:
+    plate_model, vehicle_model, char_model = resolve_model_paths(args)
+    LOGGER.info("Plate model:   %s", plate_model)
+    LOGGER.info("Vehicle model: %s", vehicle_model or "disabled")
+    LOGGER.info("Char model:    %s", char_model)
+    LOGGER.info("OCR mode:      %s", args.ocr)
+
+    return ALPRPipeline(
+        plate_model_path=plate_model,
+        vehicle_model_path=vehicle_model,
+        char_model_path=char_model,
+        ocr_mode=args.ocr,
+        gpu=args.gpu,
+        plate_confidence=args.conf,
+        vehicle_confidence=args.vehicle_conf,
+        char_confidence=args.char_conf,
+        imgsz=args.imgsz,
+        device=args.device,
+        stride=args.stride,
+        min_votes=args.min_votes,
+        save_crops=not args.no_crops,
+    )
+
+
 def resolve_videos(source: Path) -> list[Path]:
     if source.is_file():
         if source.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -129,6 +196,49 @@ def resolve_videos(source: Path) -> list[Path]:
     raise FileNotFoundError(f"Source not found: {source}")
 
 
+def run_camera(
+    args: argparse.Namespace,
+    pipeline: ALPRPipeline,
+    camera_source: str,
+) -> int:
+    source = parse_camera_source(camera_source)
+    output_root = (args.output or settings.OUTPUT_DIR).resolve()
+    output_dir = output_root / f"camera_{int(time.time() * 1000)}"
+
+    try:
+        result = pipeline.process_camera(
+            source=source,
+            output_dir=output_dir,
+            save_annotated=args.save_video and not args.no_annotated,
+            display=not args.no_display,
+            save_db=not args.no_db,
+            max_frames=args.max_frames,
+            duration_seconds=args.duration,
+            reconnect_attempts=args.reconnect_attempts,
+        )
+    except KeyboardInterrupt:
+        LOGGER.warning("Interrupted by user.")
+        return 130
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Camera processing failed: %s", exc)
+        return 1
+
+    summary = {
+        "video": redact_source(source),
+        "job_id": result.job.id,
+        "records": [record.to_dict() for record in result.records],
+        "output_dir": str(result.output_dir),
+        "output_video": str(result.output_video) if result.output_video else None,
+        "results_json": str(result.results_json) if result.results_json else None,
+        "results_csv": str(result.results_csv) if result.results_csv else None,
+    }
+    if args.json:
+        print(json.dumps([summary], ensure_ascii=False, indent=2))
+    else:
+        print_summary([summary])
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -136,37 +246,31 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(logging.DEBUG if args.verbose else logging.INFO)
     settings.ensure_directories()
 
-    try:
-        videos = resolve_videos(Path(args.source))
-    except (FileNotFoundError, ValueError) as exc:
-        LOGGER.error("%s", exc)
-        return 2
+    camera_source = args.camera
+    if camera_source is None and args.source and is_camera_source(args.source):
+        camera_source = args.source
 
-    plate_model, vehicle_model, char_model = resolve_model_paths(args)
-    LOGGER.info("Plate model:   %s", plate_model)
-    LOGGER.info("Vehicle model: %s", vehicle_model or "disabled")
-    LOGGER.info("Char model:    %s", char_model)
-    LOGGER.info("OCR mode:      %s", args.ocr)
+    if camera_source is not None and args.camera is not None and args.source is not None:
+        parser.error("Provide either a video SOURCE or --camera, not both.")
+    if camera_source is None and not args.source:
+        parser.error("Provide a video file/directory or a camera source (--camera 0).")
+
+    videos: list[Path] = []
+    if camera_source is None:
+        try:
+            videos = resolve_videos(Path(args.source))
+        except (FileNotFoundError, ValueError) as exc:
+            LOGGER.error("%s", exc)
+            return 2
 
     try:
-        pipeline = ALPRPipeline(
-            plate_model_path=plate_model,
-            vehicle_model_path=vehicle_model,
-            char_model_path=char_model,
-            ocr_mode=args.ocr,
-            gpu=args.gpu,
-            plate_confidence=args.conf,
-            vehicle_confidence=args.vehicle_conf,
-            char_confidence=args.char_conf,
-            imgsz=args.imgsz,
-            device=args.device,
-            stride=args.stride,
-            min_votes=args.min_votes,
-            save_crops=not args.no_crops,
-        )
+        pipeline = build_pipeline(args)
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("Failed to initialise pipeline: %s", exc)
         return 1
+
+    if camera_source is not None:
+        return run_camera(args, pipeline, camera_source)
 
     output_root = (args.output or settings.OUTPUT_DIR).resolve()
     output_root.mkdir(parents=True, exist_ok=True)

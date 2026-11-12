@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.models import VideoJob
 from src.pipeline.alpr_pipeline import ALPRPipeline, TrackState
@@ -123,3 +124,64 @@ def test_build_records_filters_low_support_candidates() -> None:
     )
 
     assert records == []
+
+
+def test_collect_realtime_records_emits_ready_track_once() -> None:
+    pipeline = make_pipeline()
+    pipeline.tracker = SimpleNamespace(tracks={1: object()})
+    state = make_state(1, "51F88234", 0.90, 1000, votes=2)
+    states = {1: state}
+    job = VideoJob(id="job-camera", filename="camera_0", file_size_bytes=0)
+
+    records = pipeline._collect_realtime_records(
+        states=states,
+        job=job,
+        video_source="camera_0",
+        crops_dir=Path("."),
+    )
+
+    assert [record.plate_number for record in records] == ["51F88234"]
+    assert state.emitted is True
+    assert states[1] is state
+
+    assert pipeline._collect_realtime_records(
+        states=states,
+        job=job,
+        video_source="camera_0",
+        crops_dir=Path("."),
+    ) == []
+
+
+def test_collect_realtime_records_drops_expired_unconfirmed_track() -> None:
+    pipeline = make_pipeline()
+    pipeline.tracker = SimpleNamespace(tracks={})
+    states = {1: make_state(1, "51F88234", 0.60, 1000, votes=1)}
+    job = VideoJob(id="job-camera", filename="camera_0", file_size_bytes=0)
+
+    records = pipeline._collect_realtime_records(
+        states=states,
+        job=job,
+        video_source="camera_0",
+        crops_dir=Path("."),
+    )
+
+    assert records == []
+    assert states == {}
+
+
+def test_collect_realtime_records_keeps_active_unconfirmed_track() -> None:
+    pipeline = make_pipeline()
+    pipeline.tracker = SimpleNamespace(tracks={1: object()})
+    state = make_state(1, "51F88234", 0.60, 1000, votes=1)
+    states = {1: state}
+    job = VideoJob(id="job-camera", filename="camera_0", file_size_bytes=0)
+
+    records = pipeline._collect_realtime_records(
+        states=states,
+        job=job,
+        video_source="camera_0",
+        crops_dir=Path("."),
+    )
+
+    assert records == []
+    assert states[1] is state

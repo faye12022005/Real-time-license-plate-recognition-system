@@ -30,6 +30,7 @@ coverage.xml
 .env
 .env.*
 !.env.example
+!frontend/.env.local.example
 *.key
 *.pem
 
@@ -49,6 +50,7 @@ data/captures/*
 !data/captures/.gitkeep
 data/sample_videos/*
 !data/sample_videos/.gitkeep
+data/uploads/*
 
 # Generated recognition output (annotated videos, crops, JSON/CSV)
 output/
