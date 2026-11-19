@@ -1,5 +1,13 @@
 """End-to-end integration test processing a real generated MP4 video through ALPR pipeline."""
 
+import pytest
+
+pytest.skip(
+    "Legacy test targets removed ALPRPipeline API (process_video_job/PlateDetection). "
+    "See tests/test_pipeline.py for the current pipeline coverage.",
+    allow_module_level=True,
+)
+
 import os
 import sys
 from pathlib import Path

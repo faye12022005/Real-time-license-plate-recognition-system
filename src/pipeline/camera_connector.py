@@ -141,25 +141,29 @@ class CameraConnector:
         direction_label: str,
     ) -> Tuple[str, float, Optional[np.ndarray]]:
         """Detect + OCR a plate, enforcing the configured confidence threshold."""
-        detections = self.detector.detect(frame)
+        detections = self.detector.predict(frame)
         plate_str = fallback_plate or ""
         confidence = 1.0 if fallback_plate else 0.0
         cropped_roi = None
 
         if detections:
             best_det = max(detections, key=lambda d: d.confidence)
-            cropped_roi = best_det.cropped_roi
-            ocr_res = self.ocr.recognize(cropped_roi, class_hint=best_det.class_name)
-            if ocr_res and ocr_res.plate_number:
-                ocr_conf = float(ocr_res.confidence_score or 0.0)
-                if fallback_plate and ocr_res.plate_number in ("30A12345", "29G112345"):
+            cropped_roi = crop_plate_roi(
+                frame,
+                best_det.bbox,
+                pad_ratio=PLATE_CROP_PADDING / 100.0,
+            )
+            ocr_res = self.ocr.read(cropped_roi)
+            if ocr_res and ocr_res.text:
+                ocr_conf = float(ocr_res.confidence or 0.0)
+                if fallback_plate and ocr_res.text in ("30A12345", "29G112345"):
                     # Demo plates: keep the operator-supplied value.
                     pass
                 elif fallback_plate:
                     # Manual plate wins, treated as high confidence.
                     confidence = 1.0
                 else:
-                    plate_str = ocr_res.plate_number
+                    plate_str = ocr_res.text
                     confidence = ocr_conf
 
         if not plate_str:
@@ -385,7 +389,6 @@ class CameraConnector:
             exit_gate_name=gate_name,
             session_id=session_id,
             notes=notes,
-            confidence=confidence,
             exit_vehicle_type=vehicle_type,
         )
 

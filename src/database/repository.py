@@ -380,10 +380,25 @@ def delete_plate_record(record_id: str) -> bool:
 # Parking Management Functions (MySQL)
 # ==============================================================================
 
-def list_cameras() -> list[dict[str, Any]]:
+def list_cameras(
+    camera_type: Optional[str] = None,
+    is_active: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if camera_type and camera_type != "ALL":
+        clauses.append("`camera_type` = %s")
+        params.append(camera_type)
+    if is_active is not None:
+        clauses.append("`is_active` = %s")
+        params.append(int(is_active))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM `cameras` ORDER BY `created_at` DESC")
+            cursor.execute(
+                f"SELECT * FROM `cameras` {where} ORDER BY `created_at` DESC",
+                params,
+            )
             return [dict(r) for r in cursor.fetchall()]
 
 
@@ -428,15 +443,32 @@ def delete_camera(camera_id: str) -> bool:
             return cursor.rowcount > 0
 
 
-def list_residents(apartment_query: Optional[str] = None, plate_query: Optional[str] = None) -> list[dict[str, Any]]:
+def list_residents(
+    q: Optional[str] = None,
+    apartment: Optional[str] = None,
+    status: Optional[str] = None,
+    apartment_query: Optional[str] = None,
+    plate_query: Optional[str] = None,
+) -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    if apartment_query:
+    if q:
+        clauses.append(
+            "(`plate_number` LIKE %s OR `plate_display` LIKE %s "
+            "OR `owner_name` LIKE %s OR `apartment_number` LIKE %s)"
+        )
+        like = f"%{q}%"
+        params.extend([like, like, like, like])
+    apartment = apartment or apartment_query
+    if apartment:
         clauses.append("`apartment_number` LIKE %s")
-        params.append(f"%{apartment_query}%")
+        params.append(f"%{apartment}%")
     if plate_query:
         clauses.append("(`plate_number` LIKE %s OR `plate_display` LIKE %s)")
         params.extend([f"%{plate_query}%", f"%{plate_query}%"])
+    if status and status != "ALL":
+        clauses.append("`status` = %s")
+        params.append(status)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with connection() as conn:
         with conn.cursor() as cursor:
@@ -445,6 +477,18 @@ def list_residents(apartment_query: Optional[str] = None, plate_query: Optional[
 
 
 def upsert_resident_vehicle(data: dict[str, Any]) -> dict[str, Any]:
+    data = dict(data)
+    plate_norm = canonicalize_plate(data.get("plate_number") or "")
+    if plate_norm:
+        data["plate_number"] = plate_norm
+        if not data.get("plate_display"):
+            data["plate_display"] = format_plate(plate_norm)
+    if not data.get("id"):
+        data["id"] = f"RES-{uuid.uuid4().hex[:8].upper()}"
+    now = datetime.now().isoformat()
+    if not data.get("created_at"):
+        data["created_at"] = now
+    data["updated_at"] = now
     fields = [
         "id", "plate_number", "plate_display", "owner_name", "apartment_number",
         "phone_number", "vehicle_type", "rfid_card_id", "monthly_fee",
@@ -479,7 +523,13 @@ def delete_resident_vehicle(resident_id: str) -> bool:
             return cursor.rowcount > 0
 
 
-def list_parking_sessions(status: Optional[str] = None, plate: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+def list_parking_sessions(
+    status: Optional[str] = None,
+    plate: Optional[str] = None,
+    ticket_type: Optional[str] = None,
+    apartment: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
     if status and status != "ALL":
@@ -488,6 +538,12 @@ def list_parking_sessions(status: Optional[str] = None, plate: Optional[str] = N
     if plate:
         clauses.append("(`plate_number` LIKE %s OR `plate_display` LIKE %s)")
         params.extend([f"%{plate}%", f"%{plate}%"])
+    if ticket_type and ticket_type != "ALL":
+        clauses.append("`ticket_type` = %s")
+        params.append(ticket_type)
+    if apartment:
+        clauses.append("`apartment_number` LIKE %s")
+        params.append(f"%{apartment}%")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(int(limit))
     with connection() as conn:
@@ -543,18 +599,36 @@ def get_parking_dashboard_stats() -> dict[str, Any]:
             cursor.execute(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM `parking_sessions` WHERE `status` = 'PARKED') as total_parked,
+                    (SELECT COUNT(*) FROM `parking_sessions` WHERE `status` = 'PARKED') as currently_parked,
+                    (SELECT COUNT(*) FROM `parking_sessions`
+                        WHERE `status` = 'PARKED' AND `ticket_type` = 'RESIDENT') as resident_parked,
+                    (SELECT COUNT(*) FROM `parking_sessions`
+                        WHERE `status` = 'PARKED' AND `ticket_type` <> 'RESIDENT') as guest_parked,
                     (SELECT COUNT(*) FROM `parking_sessions` WHERE DATE(`entry_time`) = CURRENT_DATE) as entries_today,
                     (SELECT COUNT(*) FROM `parking_sessions` WHERE `status` = 'COMPLETED' AND DATE(`exit_time`) = CURRENT_DATE) as exits_today,
-                    (SELECT COUNT(*) FROM `resident_vehicles` WHERE `status` = 'ACTIVE') as total_residents
+                    (SELECT COALESCE(SUM(`parking_fee`), 0) FROM `parking_sessions`
+                        WHERE `status` = 'COMPLETED' AND DATE(`exit_time`) = CURRENT_DATE) as revenue_today_vnd,
+                    (SELECT COUNT(*) FROM `resident_vehicles` WHERE `status` = 'ACTIVE') as total_registered_residents,
+                    (SELECT COUNT(*) FROM `cameras`) as total_cameras,
+                    (SELECT COUNT(*) FROM `cameras` WHERE `is_active` = 1) as active_cameras
                 """
             )
             row = cursor.fetchone() or {}
+    currently_parked = int(row.get("currently_parked") or 0)
+    total_registered_residents = int(row.get("total_registered_residents") or 0)
     return {
-        "total_parked": int(row.get("total_parked") or 0),
+        "currently_parked": currently_parked,
+        "resident_parked": int(row.get("resident_parked") or 0),
+        "guest_parked": int(row.get("guest_parked") or 0),
         "entries_today": int(row.get("entries_today") or 0),
         "exits_today": int(row.get("exits_today") or 0),
-        "total_residents": int(row.get("total_residents") or 0),
+        "revenue_today_vnd": int(row.get("revenue_today_vnd") or 0),
+        "total_registered_residents": total_registered_residents,
+        "total_cameras": int(row.get("total_cameras") or 0),
+        "active_cameras": int(row.get("active_cameras") or 0),
+        # Backward-compatible aliases for older consumers.
+        "total_parked": currently_parked,
+        "total_residents": total_registered_residents,
     }
 
 
@@ -700,6 +774,7 @@ def check_out_vehicle(
     exit_gate_name: str = "Cổng Ra Làn 1",
     session_id: Optional[str] = None,
     notes: Optional[str] = None,
+    exit_vehicle_type: Optional[str] = None,
 ) -> dict[str, Any]:
     norm = canonicalize_plate(plate_number)
     now_dt = datetime.now()
@@ -725,6 +800,9 @@ def check_out_vehicle(
         duration_minutes = max(1, int(delta.total_seconds() / 60))
     except Exception:
         duration_minutes = 30
+
+    if exit_vehicle_type:
+        session["vehicle_type"] = exit_vehicle_type
 
     fee = calculate_parking_fee(
         vehicle_type=session.get("vehicle_type", "car"),

@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 import sys
+from typing import Optional
 import cv2  # type: ignore
 
 # Ensure UTF-8 output on Windows terminal
@@ -13,10 +14,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.detector import PlateDetector
-from config.settings import CAPTURES_DIR
+from config.settings import CAPTURES_DIR, PLATE_MODEL_PATH
 
 
-def test_inference(image_path: Optional[Path] = None):
+def run_inference(image_path: Optional[Path] = None):
     # Default sample image
     if image_path is None or not image_path.is_file():
         default_sample = PROJECT_ROOT / "data" / "datasets" / "car_plate_detection" / "images" / "Cars0.png"
@@ -38,13 +39,10 @@ def test_inference(image_path: Optional[Path] = None):
         return
 
     # Initialize PlateDetector (loads models/plate_detector.pt)
-    detector = PlateDetector()
-    if not detector.is_ready():
-        print("[ERROR] Mô hình PlateDetector chưa sẵn sàng hoặc thiếu file models/plate_detector.pt!")
-        return
+    detector = PlateDetector(model_path=PLATE_MODEL_PATH)
 
     # Detect
-    detections = detector.detect(frame)
+    detections = detector.predict(frame)
     print(f"[*] Phát hiện: {len(detections)} biển số xe trong ảnh.")
 
     annotated = frame.copy()
@@ -77,10 +75,9 @@ def test_inference(image_path: Optional[Path] = None):
 
 
 if __name__ == "__main__":
-    from typing import Optional
     parser = argparse.ArgumentParser(description="Chạy kiểm thử nhận diện trên 1 ảnh bất kỳ")
     parser.add_argument("--image", type=str, default=None, help="Đường dẫn file ảnh kiểm thử")
     args = parser.parse_args()
 
     img = Path(args.image) if args.image else None
-    test_inference(img)
+    run_inference(img)
