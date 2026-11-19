@@ -27,6 +27,7 @@ JOB_FIELDS = (
     "current_fps",
     "eta_seconds",
     "detected_plates_count",
+    "processed_video_url",
     "error_message",
     "completed_at",
 )
@@ -38,7 +39,7 @@ class VideoUploadOptions:
 
     save_db: bool = True
     ocr_mode: str = "hybrid"
-    stride: int = 1
+    stride: int = 2
     min_votes: int = settings.MIN_PLATE_VOTES
 
 
@@ -81,6 +82,7 @@ class VideoJobManager:
             "eta_seconds": 0.0,
             "detected_plates_count": 0,
             "video_url": media_url(str(path)),
+            "processed_video_url": None,
             "error_message": None,
             "created_at": now,
             "completed_at": None,
@@ -230,7 +232,7 @@ class VideoJobManager:
             result = pipeline.process_video(
                 video_path=path,
                 output_dir=settings.OUTPUT_DIR / f"upload_{job_id}",
-                save_annotated=False,
+                save_annotated=True,
                 display=False,
                 save_db=False,
                 job_id=job_id,
@@ -243,9 +245,14 @@ class VideoJobManager:
                 for record in records:
                     record.job_filename = job["filename"]
                 for field_name in JOB_FIELDS:
-                    job[field_name] = getattr(result.job, field_name)
+                    if hasattr(result.job, field_name):
+                        val = getattr(result.job, field_name)
+                        if val is not None:
+                            job[field_name] = val
                 job["stage"] = result.job.stage
                 job["video_url"] = media_url(str(path))
+                if result.output_video and Path(result.output_video).exists():
+                    job["processed_video_url"] = media_url(str(result.output_video))
                 snapshot = dict(job)
             if options.save_db:
                 from src.database.repository import insert_video_job, default_repo

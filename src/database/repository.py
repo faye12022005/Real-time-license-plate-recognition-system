@@ -17,9 +17,9 @@ INSERT INTO `jobs` (
     `id`, `filename`, `file_size_bytes`, `stage`, `stage_progress_pct`,
     `overall_progress_pct`, `total_frames`, `processed_frames`,
     `duration_seconds`, `current_fps`, `eta_seconds`,
-    `detected_plates_count`, `video_url`, `error_message`,
+    `detected_plates_count`, `video_url`, `processed_video_url`, `error_message`,
     `created_at`, `completed_at`
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON DUPLICATE KEY UPDATE
     `stage` = VALUES(`stage`),
     `stage_progress_pct` = VALUES(`stage_progress_pct`),
@@ -29,6 +29,8 @@ ON DUPLICATE KEY UPDATE
     `current_fps` = VALUES(`current_fps`),
     `eta_seconds` = VALUES(`eta_seconds`),
     `detected_plates_count` = VALUES(`detected_plates_count`),
+    `video_url` = VALUES(`video_url`),
+    `processed_video_url` = VALUES(`processed_video_url`),
     `error_message` = VALUES(`error_message`),
     `completed_at` = VALUES(`completed_at`)
 """
@@ -77,6 +79,7 @@ def _job_params(job: VideoJob) -> tuple:
         job.eta_seconds,
         job.detected_plates_count,
         job.video_url,
+        getattr(job, "processed_video_url", None),
         job.error_message,
         job.created_at,
         job.completed_at,
@@ -270,6 +273,7 @@ def insert_video_job(data: Any) -> None:
             eta_seconds=float(data.get("eta_seconds") or 0.0),
             detected_plates_count=int(data.get("detected_plates_count") or 0),
             video_url=data.get("video_url"),
+            processed_video_url=data.get("processed_video_url"),
             error_message=data.get("error_message"),
             created_at=data.get("created_at") or datetime.now(timezone.utc).isoformat(),
             completed_at=data.get("completed_at"),

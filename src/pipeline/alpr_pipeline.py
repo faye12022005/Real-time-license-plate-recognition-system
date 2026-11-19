@@ -309,6 +309,9 @@ class ALPRPipeline:
         job.current_fps = processed_frames / elapsed
         job.eta_seconds = 0.0
         job.detected_plates_count = len(records)
+        if output_video and output_video.exists():
+            from api.serializers import media_url
+            job.processed_video_url = media_url(str(output_video))
         job.completed_at = datetime.now(timezone.utc).isoformat()
         _notify_job(progress_callback, job)
 
@@ -663,6 +666,20 @@ class ALPRPipeline:
             pts_ms = int(round(frame_index / fps * 1000.0)) if fps > 0 else 0
 
         for track, detection in matches:
+            state = states.get(track.track_id)
+            if state is not None and state.votes:
+                top_votes = max(state.votes.values())
+                if top_votes >= self.min_votes and state.best_confidence >= self.high_confidence_accept:
+                    state.last_frame_index = frame_index
+                    state.last_pts_ms = pts_ms
+                    draw_plate_label(
+                        frame,
+                        detection.bbox,
+                        format_plate(state.best_text),
+                        state.best_confidence,
+                    )
+                    continue
+
             crop = crop_with_padding(frame, detection.bbox, pad_ratio=0.15)
             if crop.size == 0:
                 continue

@@ -33,6 +33,7 @@ SCHEMA = (
         `eta_seconds` DOUBLE NOT NULL DEFAULT 0,
         `detected_plates_count` INT NOT NULL DEFAULT 0,
         `video_url` TEXT NULL,
+        `processed_video_url` TEXT NULL,
         `error_message` TEXT NULL,
         `created_at` VARCHAR(64) NOT NULL,
         `completed_at` VARCHAR(64) NULL,
@@ -271,6 +272,10 @@ def init_db(database: Optional[str] = None) -> None:
         with conn.cursor() as cursor:
             for statement in SCHEMA:
                 cursor.execute(statement)
+            try:
+                cursor.execute("ALTER TABLE `jobs` ADD COLUMN `processed_video_url` TEXT NULL AFTER `video_url`")
+            except Exception:
+                pass
         conn.commit()
     except Exception:
         conn.rollback()

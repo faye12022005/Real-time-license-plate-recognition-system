@@ -43,6 +43,7 @@ def job_payload(job: dict) -> dict:
     payload = dict(job)
     payload["stage"] = str(payload.get("stage") or "QUEUED").upper()
     payload["video_url"] = media_url(payload.get("video_url"))
+    payload["processed_video_url"] = media_url(payload.get("processed_video_url"))
     if "overall_progress_pct" in payload and payload["overall_progress_pct"] is not None:
         try:
             payload["overall_progress_pct"] = round(float(payload["overall_progress_pct"]))

@@ -421,7 +421,7 @@ export function VideoUploadZone({
           Kéo thả một hoặc nhiều video cùng lúc vào đây
         </h4>
         <p className="text-xs text-content-muted mt-1 max-w-md mx-auto">
-          Quy trình 2 bước tự động: <b>Bước 1</b> Tải tệp lên máy chủ $\rightarrow$ <b>Bước 2</b> AI quét bóc tách biển số từng khung hình.
+          Quy trình 2 bước tự động: <b>Bước 1</b> Tải tệp lên máy chủ → <b>Bước 2</b> AI quét bóc tách biển số từng khung hình.
         </p>
 
         <div className="flex flex-wrap items-center justify-center gap-2 mt-4 text-[11px] font-mono font-semibold text-content-muted">

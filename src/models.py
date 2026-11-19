@@ -85,6 +85,7 @@ class VideoJob:
     eta_seconds: float = 0.0
     detected_plates_count: int = 0
     video_url: Optional[str] = None
+    processed_video_url: Optional[str] = None
     error_message: Optional[str] = None
     created_at: str = ""
     completed_at: Optional[str] = None

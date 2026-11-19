@@ -22,6 +22,12 @@ import {
   X,
 } from "lucide-react";
 
+function formatJobTime(value?: string | null) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString("vi-VN");
+}
+
 export default function UploadPage() {
   const [jobs, setJobs] = useState<VideoJob[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -290,6 +296,8 @@ export default function UploadPage() {
                             ? "HOÀN TẤT"
                             : job.stage === "FAILED"
                             ? "LỖI"
+                            : job.stage === "QUEUED"
+                            ? "ĐANG CHỜ"
                             : "ĐANG XỬ LÝ"}
                         </span>
                       </td>
@@ -321,7 +329,7 @@ export default function UploadPage() {
 
                       {/* Thời gian */}
                       <td className="py-3 px-4 text-content-muted font-mono text-[11px]">
-                        {new Date(job.created_at).toLocaleString("vi-VN")}
+                        {formatJobTime(job.created_at)}
                       </td>
 
                       {/* Tốc độ AI */}
