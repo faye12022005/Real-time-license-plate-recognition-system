@@ -17,12 +17,13 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 import uvicorn
 from api.app import app
-from src.database.connection import init_db
+from src.database.connection import check_db_status, init_db
 
 
 def main() -> None:
     """Initialize database and start FastAPI server with Uvicorn."""
-    db_status = init_db()
+    init_db()
+    db_status = check_db_status()
 
     print("\n" + "=" * 68)
     print(" 🚀 SMART ALPR 2.0 BACKEND SERVER (PARKING & LICENSE PLATE SYSTEM)")

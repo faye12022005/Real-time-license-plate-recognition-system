@@ -698,10 +698,10 @@ export function RealtimeVideoScanner() {
           <div className="pt-2 border-t border-border/80 text-[11px] text-content-muted flex items-center justify-between font-mono">
             <span>Dữ liệu đồng bộ: 100% CSDL</span>
             <Link
-              href="/plates"
+              href="/trace"
               className="font-bold text-primary hover:underline"
             >
-              Mở Kho Biển số →
+              Mở Truy vết Biển số →
             </Link>
           </div>
         </div>

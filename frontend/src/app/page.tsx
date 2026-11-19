@@ -14,12 +14,12 @@ export default async function DashboardPage() {
 
   try {
     [kpis, plates] = await Promise.all([alprApi.getKPIs(), alprApi.getPlates()]);
-  } catch (err) {
-    // Backend không gọi được → giao diện cứu cánh có nút Thử lại.
-    if (err instanceof BackendUnreachableError) {
-      return <BackendOffline message={err.message} />;
-    }
-    throw err; // lỗi bất thường khác → error.tsx (Error Boundary)
+  } catch (err: unknown) {
+    const errorMsg =
+      err instanceof Error
+        ? err.message
+        : "Không thể kết nối đến máy chủ Backend FastAPI (http://localhost:8000).";
+    return <BackendOffline message={errorMsg} />;
   }
 
   return <DashboardLiveView initialKpis={kpis} initialPlates={plates} />;

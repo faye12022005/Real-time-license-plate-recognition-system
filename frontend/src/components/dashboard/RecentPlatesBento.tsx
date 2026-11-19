@@ -22,10 +22,10 @@ export function RecentPlatesBento({ plates }: { plates: PlateRecord[] }) {
           </p>
         </div>
         <Link
-          href="/plates"
+          href="/trace"
           className="text-xs font-semibold text-primary hover:text-primary-hover flex items-center gap-1 transition-colors"
         >
-          <span>Xem tất cả</span>
+          <span>Truy vết tất cả</span>
           <ExternalLink className="w-3.5 h-3.5" />
         </Link>
       </div>

@@ -249,6 +249,15 @@ Sau khi cả Backend (`:8000`) và Frontend (`:3000`) đều đã hoạt động
 ### 4. Đăng ký xe cư dân (Vé tháng)
 - Gọi API `POST /api/v1/parking/residents` để thêm xe cư dân (biển số, chủ xe, số căn hộ, ngày hết hạn vé). Xe cư dân khi vào/ra sẽ tự động được nhận diện diện ưu tiên miễn phí.
 
+### 5. Cấu hình hệ thống (`/settings`)
+- Mở mục **Cấu hình hệ thống** trên sidebar để thiết lập:
+  - **Bãi xe & Bảng giá:** giá xe máy/ô tô/xe đạp/xe điện theo ngày/đêm, grace period, sức chứa tối đa (Dashboard tự cảnh báo "Bãi xe sắp đầy" khi đạt 85%).
+  - **AI & Barie:** ngưỡng tin cậy nhận diện, sai số ký tự khi đối soát, chế độ chụp ảnh bằng chứng, tự động mở barie cho xe cư dân.
+  - **An ninh:** danh sách đen biển số, cảnh báo lệch biển số/loại xe, xe gửi quá hạn.
+  - **Lưu trữ:** thời hạn giữ video/ảnh crop, dọn dẹp thủ công hoặc tự động mỗi 6 giờ.
+  - **Tòa nhà & Database:** tên chung cư, hotline, ca trực, kiểm tra kết nối và tải file backup `.sql`.
+- Cấu hình được lưu tại `data/system_settings.json` và áp dụng trực tiếp vào tính cước, đối soát biển số và luồng mở barie.
+
 ---
 
 ## 5. Cấu hình Docker (Tùy chọn cho SQL Server)
@@ -284,6 +293,7 @@ Real-time-license-plate-recognition-system/
 │       ├── analytics.py            # API thống kê KPI, báo cáo doanh thu bãi xe
 │       ├── parking.py              # API camera, check-in/out, quản lý xe cư dân
 │       ├── plates.py               # API tra cứu biển số, truy vết phương tiện
+│       ├── settings.py             # API cấu hình hệ thống, lưu trữ, backup database
 │       └── videos.py               # API upload video và theo dõi tiến độ
 ├── config/
 │   ├── settings.py                 # Cấu hình toàn cục, đọc file .env.local
@@ -321,6 +331,7 @@ Real-time-license-plate-recognition-system/
 │   └── utils/
 │       ├── image_processing.py     # Tiền xử lý ảnh (deskew, tăng tương phản, resize)
 │       ├── plate_validator.py      # Chuẩn hóa biển số xe Việt Nam
+│       ├── settings_store.py       # Lưu cấu hình hệ thống, dung lượng, dọn dẹp, backup DB
 │       └── logger.py               # Cấu hình ghi log hệ thống
 ├── tests/                          # Bộ kiểm thử tự động pytest
 ├── docker-compose.yml              # Khởi chạy SQL Server container
@@ -355,6 +366,12 @@ Swagger UI đầy đủ và tài liệu tương tác có tại: `http://localhos
 | | `GET` | `/api/v1/parking/sessions` | Lịch sử các phiên gửi xe (đang đỗ, đã ra) |
 | | `GET` | `/api/v1/parking/residents` | Danh sách xe cư dân đăng ký vé tháng |
 | | `POST` | `/api/v1/parking/residents` | Đăng ký mới hoặc gia hạn vé tháng cho cư dân |
+| **Cấu hình** | `GET` | `/api/v1/settings` | Lấy toàn bộ cấu hình hệ thống |
+| | `PUT` | `/api/v1/settings` | Lưu bảng giá, AI/barie, an ninh, lưu trữ, tòa nhà |
+| | `GET` | `/api/v1/settings/storage` | Dung lượng các thư mục media và ổ đĩa |
+| | `POST` | `/api/v1/settings/cleanup` | Dọn dẹp video/ảnh cũ theo thời hạn lưu trữ |
+| | `GET` | `/api/v1/settings/database/status` | Kiểm tra kết nối và số bản ghi database |
+| | `GET` | `/api/v1/settings/database/backup` | Tải file backup `.sql` (SQLite/MySQL) |
 
 ---
 

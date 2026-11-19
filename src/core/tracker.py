@@ -1,131 +1,160 @@
-"""Vehicle and license plate tracking across video frames (IoU-based tracker)."""
+"""Lightweight IoU + center-distance tracker for plate detections."""
 
+from __future__ import annotations
+
+import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-import numpy as np  # type: ignore
+from typing import Iterable
 
-from src.core.detector import PlateDetection
+from src.models import Detection
+
+
+def _iou(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> float:
+    ax1, ay1, ax2, ay2 = first
+    bx1, by1, bx2, by2 = second
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+        return 0.0
+    intersection = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - intersection
+    return intersection / float(union) if union > 0 else 0.0
+
+
+def _center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
+    return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+
+
+def _area(bbox: tuple[int, int, int, int]) -> int:
+    return max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
+
+
+def _size(bbox: tuple[int, int, int, int]) -> float:
+    return max(1.0, (abs(bbox[2] - bbox[0]) + abs(bbox[3] - bbox[1])) / 2.0)
 
 
 @dataclass
-class TrackedPlate:
-    """Represents a tracked vehicle/plate across multiple frames."""
+class Track:
+    """State of one tracked plate."""
 
     track_id: int
-    bbox: Tuple[int, int, int, int]  # (x1, y1, x2, y2)
-    class_id: int
-    class_name: str
-    best_roi: np.ndarray
-    best_confidence: float
+    bbox: tuple[int, int, int, int]
+    last_frame_index: int
     hits: int = 1
-    time_since_update: int = 0
-    plate_text: Optional[str] = None
-    plate_display: Optional[str] = None
+    age: int = 0
+    history: list[tuple[int, int, int, int]] = field(default_factory=list)
+
+    def update(self, bbox: tuple[int, int, int, int], frame_index: int) -> None:
+        self.bbox = bbox
+        self.last_frame_index = frame_index
+        self.hits += 1
+        self.history.append(bbox)
 
 
-def calculate_iou(boxA: Tuple[int, int, int, int], boxB: Tuple[int, int, int, int]) -> float:
-    """Calculate Intersection over Union (IoU) of two bounding boxes."""
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
+class IoUTracker:
+    """Greedy tracker combining IoU and normalized center distance."""
 
-    inter_w = max(0, xB - xA)
-    inter_h = max(0, yB - yA)
-    inter_area = inter_w * inter_h
+    def __init__(
+        self,
+        iou_threshold: float = 0.3,
+        max_age: int = 30,
+        max_center_distance: float = 0.55,
+    ) -> None:
+        self.iou_threshold = float(iou_threshold)
+        self.max_age = int(max_age)
+        self.max_center_distance = float(max_center_distance)
+        self.tracks: dict[int, Track] = {}
+        self._next_id = 1
 
-    boxA_area = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-    boxB_area = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-    union_area = boxA_area + boxB_area - inter_area
+    def _match_score(
+        self,
+        track: Track,
+        detection: Detection,
+        frame_index: int,
+    ) -> float:
+        iou = _iou(track.bbox, detection.bbox)
+        if iou >= self.iou_threshold:
+            return 1.0 + iou
 
-    if union_area <= 0:
-        return 0.0
+        missed_frames = frame_index - track.last_frame_index
+        if missed_frames > 2:
+            return 0.0
 
-    return float(inter_area) / float(union_area)
+        track_area = _area(track.bbox)
+        detection_area = detection.area
+        if track_area <= 0 or detection_area <= 0:
+            return 0.0
+        area_ratio = detection_area / float(track_area)
+        if not 0.30 <= area_ratio <= 3.30:
+            return 0.0
 
+        track_center = _center(track.bbox)
+        detection_center = detection.center
+        distance = math.hypot(
+            detection_center[0] - track_center[0],
+            detection_center[1] - track_center[1],
+        )
+        normalized_distance = distance / ((_size(track.bbox) + _size(detection.bbox)) / 2.0)
+        if normalized_distance > self.max_center_distance:
+            return 0.0
+        return max(0.0, 1.0 - normalized_distance / self.max_center_distance) * 0.8
 
-class VehicleTracker:
-    """Multi-object IoU tracker for vehicle license plates."""
-
-    def __init__(self, iou_threshold: float = 0.3, max_age: int = 15) -> None:
-        self.iou_threshold = iou_threshold
-        self.max_age = max_age
-        self.tracks: Dict[int, TrackedPlate] = {}
-        self.next_id: int = 1
-
-    def update(self, detections: List[PlateDetection]) -> List[TrackedPlate]:
-        """Update tracker with detections from current frame."""
-        # Age all current tracks
+    def update(
+        self,
+        detections: Iterable[Detection],
+        frame_index: int,
+    ) -> list[tuple[Track, Detection]]:
+        """Match detections to existing tracks and return matched pairs."""
+        detections = list(detections)
         for track in self.tracks.values():
-            track.time_since_update += 1
+            track.age += 1
 
-        matched_tracks = set()
-        matched_dets = set()
+        candidates: list[tuple[float, int, int]] = []
+        for track_index, track in enumerate(self.tracks.values()):
+            for detection_index, detection in enumerate(detections):
+                score = self._match_score(track, detection, frame_index)
+                if score > 0.0:
+                    candidates.append((score, track_index, detection_index))
+        candidates.sort(reverse=True)
 
-        # Match detections to existing tracks via IoU
-        if self.tracks and detections:
-            track_ids = list(self.tracks.keys())
-            iou_matrix = np.zeros((len(track_ids), len(detections)), dtype=np.float32)
+        matched_tracks: set[int] = set()
+        matched_detections: set[int] = set()
+        track_ids = list(self.tracks.keys())
+        matches: list[tuple[Track, Detection]] = []
 
-            for i, tid in enumerate(track_ids):
-                for j, det in enumerate(detections):
-                    iou_matrix[i, j] = calculate_iou(self.tracks[tid].bbox, det.bbox)
+        for score, track_index, detection_index in candidates:
+            if track_index in matched_tracks or detection_index in matched_detections:
+                continue
+            track = self.tracks[track_ids[track_index]]
+            detection = detections[detection_index]
+            track.update(detection.bbox, frame_index)
+            matched_tracks.add(track_index)
+            matched_detections.add(detection_index)
+            matches.append((track, detection))
 
-            # Greedy matching by maximum IoU
-            while True:
-                max_iou = np.max(iou_matrix)
-                if max_iou < self.iou_threshold:
-                    break
+        for detection_index, detection in enumerate(detections):
+            if detection_index in matched_detections:
+                continue
+            track = Track(
+                track_id=self._next_id,
+                bbox=detection.bbox,
+                last_frame_index=frame_index,
+                history=[detection.bbox],
+            )
+            self._next_id += 1
+            self.tracks[track.track_id] = track
+            matches.append((track, detection))
 
-                i, j = np.unravel_index(np.argmax(iou_matrix), iou_matrix.shape)
-                tid = track_ids[i]
-                det = detections[j]
+        expired = [
+            track_id
+            for track_id, track in self.tracks.items()
+            if frame_index - track.last_frame_index > self.max_age
+        ]
+        for track_id in expired:
+            self.tracks.pop(track_id, None)
 
-                # Update matched track
-                track = self.tracks[tid]
-                track.bbox = det.bbox
-                track.time_since_update = 0
-                track.hits += 1
-
-                # Update best ROI if detection confidence is higher
-                if det.confidence > track.best_confidence:
-                    track.best_confidence = det.confidence
-                    track.best_roi = det.cropped_roi
-
-                matched_tracks.add(tid)
-                matched_dets.add(j)
-
-                # Zero out row and column
-                iou_matrix[i, :] = -1
-                iou_matrix[:, j] = -1
-
-        # Create new tracks for unmatched detections
-        for j, det in enumerate(detections):
-            if j not in matched_dets:
-                new_track = TrackedPlate(
-                    track_id=self.next_id,
-                    bbox=det.bbox,
-                    class_id=det.class_id,
-                    class_name=det.class_name,
-                    best_roi=det.cropped_roi,
-                    best_confidence=det.confidence,
-                )
-                self.tracks[self.next_id] = new_track
-                self.next_id += 1
-
-        # Delete expired tracks
-        dead_ids = [tid for tid, t in self.tracks.items() if t.time_since_update > self.max_age]
-        for tid in dead_ids:
-            del self.tracks[tid]
-
-        # Return tracks seen in current frame
-        return [t for t in self.tracks.values() if t.time_since_update == 0]
-
-    def reset(self) -> None:
-        """Reset tracking state."""
-        self.tracks.clear()
-        self.next_id = 1
-
-    def process(self, plate_text: str) -> None:
-        """Mark or update tracking state for plate string."""
-        pass
+        return matches

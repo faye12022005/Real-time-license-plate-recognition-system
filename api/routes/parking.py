@@ -71,6 +71,7 @@ class CheckInPayload(BaseModel):
 class CheckOutPayload(BaseModel):
     camera_id: str = Field("CAM-OUT-01", description="Mã camera cổng ra", examples=["CAM-OUT-01"])
     plate_number: Optional[str] = Field("51F-882.34", description="Biển số xe cần check-out", examples=["51F-882.34"])
+    vehicle_type: Optional[str] = Field(None, description="Loại phương tiện ghi nhận lúc ra (tùy chọn)", examples=["car"])
     session_id: Optional[str] = Field(None, description="Mã phiên gửi xe (tùy chọn)", examples=[None])
     notes: Optional[str] = Field("Xe ra bình thường", description="Ghi chú xuất bãi", examples=["Xe ra bình thường"])
 
@@ -223,12 +224,15 @@ def check_in_by_trigger(payload: CheckInPayload):
             camera_id=payload.camera_id,
             fallback_plate=payload.plate_number,
             notes=payload.notes,
+            vehicle_type=payload.vehicle_type,
         )
         return {
             "status": "success",
             "message": "Ghi nhận xe vào bãi thành công",
             "data": session,
         }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi khi xử lý xe vào bãi: {str(e)}")
 
@@ -237,6 +241,7 @@ def check_in_by_trigger(payload: CheckInPayload):
 async def check_in_by_image_upload(
     camera_id: str = Form("CAM-IN-01"),
     plate_number: Optional[str] = Form(None),
+    vehicle_type: str = Form("car"),
     notes: Optional[str] = Form(None),
     file: UploadFile = File(...),
 ):
@@ -248,12 +253,16 @@ async def check_in_by_image_upload(
     if frame is None:
         raise HTTPException(status_code=422, detail="Tệp tải lên không phải là ảnh hợp lệ")
 
-    session = connector.process_camera_entry(
-        camera_id=camera_id,
-        frame=frame,
-        fallback_plate=plate_number,
-        notes=notes or f"Tải lên từ thiết bị: {file.filename}",
-    )
+    try:
+        session = connector.process_camera_entry(
+            camera_id=camera_id,
+            frame=frame,
+            fallback_plate=plate_number,
+            notes=notes or f"Tải lên từ thiết bị: {file.filename}",
+            vehicle_type=vehicle_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     return {
         "status": "success",
         "message": "Đã chụp ảnh xe vào và lưu cơ sở dữ liệu",
@@ -274,6 +283,7 @@ def check_out_by_trigger(payload: CheckOutPayload):
             fallback_plate=payload.plate_number,
             session_id=payload.session_id,
             notes=payload.notes,
+            vehicle_type=payload.vehicle_type,
         )
         return {
             "status": "success",
@@ -290,6 +300,7 @@ def check_out_by_trigger(payload: CheckOutPayload):
 async def check_out_by_image_upload(
     camera_id: str = Form("CAM-OUT-01"),
     plate_number: Optional[str] = Form(None),
+    vehicle_type: Optional[str] = Form(None),
     session_id: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
     file: UploadFile = File(...),
@@ -309,6 +320,7 @@ async def check_out_by_image_upload(
             fallback_plate=plate_number,
             session_id=session_id,
             notes=notes or f"Tải lên lúc ra: {file.filename}",
+            vehicle_type=vehicle_type,
         )
         return {
             "status": "success",

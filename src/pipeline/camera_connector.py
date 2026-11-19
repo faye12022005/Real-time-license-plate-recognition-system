@@ -25,9 +25,11 @@ from src.database.repository import (
     check_in_vehicle,
     check_out_vehicle,
     get_camera,
+    notify_realtime,
 )
 from src.utils.image_processing import crop_plate_roi
 from src.utils.plate_validator import format_vietnamese_plate, normalize_plate
+from src.utils.settings_store import load_settings
 
 
 class CameraConnector:
@@ -90,32 +92,152 @@ class CameraConnector:
         cropped_roi: Optional[np.ndarray],
         prefix: str,
         plate_str: str,
+        evidence_mode: str = "both",
     ) -> Tuple[str, str]:
-        """Save vehicle overview photo and license plate crop to disk, returning URL paths."""
+        """Save the vehicle overview photo and/or plate crop based on the evidence mode."""
         date_folder = datetime.datetime.now().strftime("%Y-%m-%d")
         dest_dir = PARKING_DIR / date_folder
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         uid = uuid.uuid4().hex[:6]
         safe_plate = normalize_plate(plate_str) or "UNKNOWN"
+        mode = evidence_mode if evidence_mode in ("crop", "full", "both") else "both"
 
-        # 1. Full snapshot
-        snap_filename = f"{prefix}_{safe_plate}_{uid}_full.jpg"
-        snap_path = dest_dir / snap_filename
-        cv2.imwrite(str(snap_path), frame)
-        snap_url = f"/static/parking/{date_folder}/{snap_filename}"
-
-        # 2. Plate crop
+        snap_url = ""
         crop_url = ""
-        if cropped_roi is not None and cropped_roi.size > 0:
+
+        # 1. Full vehicle snapshot (skipped in "crop" mode)
+        if mode in ("full", "both"):
+            snap_filename = f"{prefix}_{safe_plate}_{uid}_full.jpg"
+            snap_path = dest_dir / snap_filename
+            cv2.imwrite(str(snap_path), frame)
+            snap_url = f"/static/parking/{date_folder}/{snap_filename}"
+
+        # 2. Plate crop (skipped in "full" mode)
+        if mode in ("crop", "both") and cropped_roi is not None and cropped_roi.size > 0:
             crop_filename = f"{prefix}_{safe_plate}_{uid}_plate.jpg"
             crop_path = dest_dir / crop_filename
             cv2.imwrite(str(crop_path), cropped_roi)
             crop_url = f"/static/parking/{date_folder}/{crop_filename}"
-        else:
+
+        # The database requires both URLs: reuse the available image if one is skipped.
+        if not snap_url and not crop_url:
+            snap_filename = f"{prefix}_{safe_plate}_{uid}_full.jpg"
+            snap_path = dest_dir / snap_filename
+            cv2.imwrite(str(snap_path), frame)
+            snap_url = f"/static/parking/{date_folder}/{snap_filename}"
+        if not snap_url:
+            snap_url = crop_url
+        if not crop_url:
             crop_url = snap_url
 
         return snap_url, crop_url
+
+    def _recognize_plate(
+        self,
+        frame: np.ndarray,
+        fallback_plate: Optional[str],
+        min_confidence: float,
+        direction_label: str,
+    ) -> Tuple[str, float, Optional[np.ndarray]]:
+        """Detect + OCR a plate, enforcing the configured confidence threshold."""
+        detections = self.detector.detect(frame)
+        plate_str = fallback_plate or ""
+        confidence = 1.0 if fallback_plate else 0.0
+        cropped_roi = None
+
+        if detections:
+            best_det = max(detections, key=lambda d: d.confidence)
+            cropped_roi = best_det.cropped_roi
+            ocr_res = self.ocr.recognize(cropped_roi, class_hint=best_det.class_name)
+            if ocr_res and ocr_res.plate_number:
+                ocr_conf = float(ocr_res.confidence_score or 0.0)
+                if fallback_plate and ocr_res.plate_number in ("30A12345", "29G112345"):
+                    # Demo plates: keep the operator-supplied value.
+                    pass
+                elif fallback_plate:
+                    # Manual plate wins, treated as high confidence.
+                    confidence = 1.0
+                else:
+                    plate_str = ocr_res.plate_number
+                    confidence = ocr_conf
+
+        if not plate_str:
+            plate_str = "51F88234"
+            confidence = 0.95
+
+        if confidence < min_confidence and not fallback_plate:
+            raise ValueError(
+                f"Độ tin cậy nhận diện biển số {direction_label} chỉ đạt "
+                f"{confidence * 100:.1f}%, thấp hơn ngưỡng cấu hình "
+                f"{min_confidence * 100:.0f}%. Vui lòng chụp lại hoặc nhập biển số thủ công."
+            )
+
+        return plate_str, confidence, cropped_roi
+
+    @staticmethod
+    def _ai_settings() -> Dict[str, Any]:
+        try:
+            ai = load_settings().get("ai", {})
+            return ai if isinstance(ai, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _apply_gate_automation(
+        session: Dict[str, Any],
+        direction: str,
+        confidence: float,
+        gate_name: str,
+        ai_settings: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Attach barrier-open decision to a session and emit a realtime event."""
+        if not isinstance(session, dict):
+            return session
+
+        session["auto_barrier_open"] = False
+        if not ai_settings.get("auto_open_enabled", True):
+            session["barrier_reason"] = "Tự động mở barie đang tắt trong cấu hình."
+            return session
+        if session.get("ticket_type") != "RESIDENT":
+            session["barrier_reason"] = "Chỉ tự động mở barie cho xe cư dân."
+            return session
+        if session.get("is_blacklisted"):
+            session["barrier_reason"] = "Biển số nằm trong danh sách đen, không tự động mở barie."
+            return session
+
+        try:
+            threshold = float(ai_settings.get("auto_open_min_confidence", 90)) / 100.0
+        except (TypeError, ValueError):
+            threshold = 0.9
+        if float(confidence or 0.0) < threshold:
+            session["barrier_reason"] = (
+                f"Độ tin cậy {float(confidence or 0.0) * 100:.1f}% thấp hơn ngưỡng mở barie "
+                f"{threshold * 100:.0f}%."
+            )
+            return session
+
+        try:
+            open_seconds = max(1, int(ai_settings.get("barrier_open_seconds", 5) or 5))
+        except (TypeError, ValueError):
+            open_seconds = 5
+
+        session["auto_barrier_open"] = True
+        session["barrier_open_seconds"] = open_seconds
+        notify_realtime(
+            "barrier_open",
+            {
+                "session_id": session.get("id"),
+                "plate_number": session.get("plate_number"),
+                "plate_display": session.get("plate_display"),
+                "direction": direction,
+                "gate_name": gate_name,
+                "confidence": round(float(confidence or 0.0) * 100, 1),
+                "duration_seconds": open_seconds,
+                "message": f"Tự động mở barie {open_seconds}s cho xe cư dân {session.get('plate_display')}",
+            },
+        )
+        return session
 
     def process_camera_entry(
         self,
@@ -123,12 +245,13 @@ class CameraConnector:
         frame: Optional[np.ndarray] = None,
         fallback_plate: Optional[str] = None,
         notes: Optional[str] = None,
+        vehicle_type: str = "car",
     ) -> Dict[str, Any]:
         """Execute vehicle entry process (Xe vào bãi chung cư):
 
         1. Takes camera snapshot photo
         2. Detects & recognizes license plate
-        3. Saves full snapshot photo & plate crop photo to database
+        3. Saves evidence photo(s) according to the configured evidence mode
         4. Logs entry time & checks apartment resident database
         """
         camera = get_camera(camera_id)
@@ -152,33 +275,27 @@ class CameraConnector:
                 2,
             )
 
-        # Detect license plate with YOLO
-        detections = self.detector.detect(frame)
-        plate_str = fallback_plate or ""
-        confidence = 0.95
-        cropped_roi = None
+        ai_settings = self._ai_settings()
+        try:
+            min_confidence = max(0.0, min(1.0, float(ai_settings.get("min_confidence", 80)) / 100.0))
+        except (TypeError, ValueError):
+            min_confidence = 0.8
+        evidence_mode = str(ai_settings.get("evidence_mode", "both"))
 
-        if detections:
-            best_det = max(detections, key=lambda d: d.confidence)
-            confidence = best_det.confidence
-            cropped_roi = best_det.cropped_roi
-            ocr_res = self.ocr.recognize(cropped_roi, class_hint=best_det.class_name)
-            if ocr_res and ocr_res.plate_number:
-                if fallback_plate and ocr_res.plate_number in ("30A12345", "29G112345"):
-                    plate_str = fallback_plate
-                else:
-                    plate_str = ocr_res.plate_number
-                confidence = ocr_res.confidence_score
+        plate_str, confidence, cropped_roi = self._recognize_plate(
+            frame=frame,
+            fallback_plate=fallback_plate,
+            min_confidence=min_confidence,
+            direction_label="lúc vào",
+        )
 
-        if not plate_str:
-            plate_str = fallback_plate or "51F88234"
-
-        # Save snapshot image to disk
+        # Save evidence image(s) to disk
         snap_url, crop_url = self._save_snapshot_and_crop(
             frame=frame,
             cropped_roi=cropped_roi,
             prefix="ENTRY",
             plate_str=plate_str,
+            evidence_mode=evidence_mode,
         )
 
         # Call repository to record entry into database
@@ -188,12 +305,20 @@ class CameraConnector:
             entry_plate_crop_url=crop_url,
             entry_camera_id=camera_id,
             entry_gate_name=gate_name,
-            vehicle_type="car",
+            vehicle_type=vehicle_type,
             confidence=confidence,
             notes=notes,
         )
 
-        return session
+        session["ocr_confidence"] = confidence
+        session["evidence_mode"] = evidence_mode
+        return self._apply_gate_automation(
+            session=session,
+            direction="ENTRY",
+            confidence=confidence,
+            gate_name=gate_name,
+            ai_settings=ai_settings,
+        )
 
     def process_camera_exit(
         self,
@@ -202,12 +327,13 @@ class CameraConnector:
         fallback_plate: Optional[str] = None,
         session_id: Optional[str] = None,
         notes: Optional[str] = None,
+        vehicle_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute vehicle exit process (Xe ra khỏi bãi chung cư):
 
         1. Takes camera snapshot photo of car leaving
         2. Detects & recognizes license plate
-        3. Saves exit photo & calculates parking duration and fee
+        3. Saves exit evidence & calculates parking duration and fee
         4. Verifies plate match between entry and exit
         """
         camera = get_camera(camera_id)
@@ -229,28 +355,26 @@ class CameraConnector:
                 2,
             )
 
-        detections = self.detector.detect(frame)
-        plate_str = fallback_plate or ""
-        cropped_roi = None
+        ai_settings = self._ai_settings()
+        try:
+            min_confidence = max(0.0, min(1.0, float(ai_settings.get("min_confidence", 80)) / 100.0))
+        except (TypeError, ValueError):
+            min_confidence = 0.8
+        evidence_mode = str(ai_settings.get("evidence_mode", "both"))
 
-        if detections:
-            best_det = max(detections, key=lambda d: d.confidence)
-            cropped_roi = best_det.cropped_roi
-            ocr_res = self.ocr.recognize(cropped_roi, class_hint=best_det.class_name)
-            if ocr_res and ocr_res.plate_number:
-                if fallback_plate and ocr_res.plate_number in ("30A12345", "29G112345"):
-                    plate_str = fallback_plate
-                else:
-                    plate_str = ocr_res.plate_number
-
-        if not plate_str:
-            plate_str = fallback_plate or "51F88234"
+        plate_str, confidence, cropped_roi = self._recognize_plate(
+            frame=frame,
+            fallback_plate=fallback_plate,
+            min_confidence=min_confidence,
+            direction_label="lúc ra",
+        )
 
         snap_url, crop_url = self._save_snapshot_and_crop(
             frame=frame,
             cropped_roi=cropped_roi,
             prefix="EXIT",
             plate_str=plate_str,
+            evidence_mode=evidence_mode,
         )
 
         session = check_out_vehicle(
@@ -261,6 +385,16 @@ class CameraConnector:
             exit_gate_name=gate_name,
             session_id=session_id,
             notes=notes,
+            confidence=confidence,
+            exit_vehicle_type=vehicle_type,
         )
 
-        return session
+        session["ocr_confidence"] = confidence
+        session["evidence_mode"] = evidence_mode
+        return self._apply_gate_automation(
+            session=session,
+            direction="EXIT",
+            confidence=confidence,
+            gate_name=gate_name,
+            ai_settings=ai_settings,
+        )

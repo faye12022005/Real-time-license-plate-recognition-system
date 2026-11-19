@@ -130,6 +130,88 @@ def test_plates_records_and_trace():
     assert summary["distinct_videos"] >= 2
     assert len(summary["records"]) >= 2
 
+    # 3. Test DELETE /plates/records/{plate_id}
+    del_res = client.delete("/api/v1/plates/records/plate-test-001")
+    assert del_res.status_code == 200
+    assert del_res.json()["deleted"] is True
+
+    # Verify plate-test-001 is deleted
+    check_res = client.get("/api/v1/plates/records?q=51F")
+    remaining_ids = [p["id"] for p in check_res.json()]
+    assert "plate-test-001" not in remaining_ids
+
+    # 4. Test POST /plates/records/delete (Bulk delete)
+    bulk_del_res = client.post("/api/v1/plates/records/delete", json={"plate_ids": ["plate-test-002"]})
+    assert bulk_del_res.status_code == 200
+    assert bulk_del_res.json()["deleted_count"] == 1
+
+    # 5. Test POST /plates/simulate (Realtime simulation & broadcast)
+    sim_res = client.post("/api/v1/plates/simulate")
+    assert sim_res.status_code == 200
+    sim_data = sim_res.json()
+    assert sim_data["status"] == "success"
+    assert "plate" in sim_data
+    assert sim_data["plate"]["plate_number"] != ""
+
+
+def test_settings_and_tariffs():
+    """Test settings persistence, tariff-driven fee calculation, and storage endpoints."""
+    import copy
+    import datetime
+
+    from src.database.repository import calculate_parking_fee
+    from src.utils.settings_store import load_settings, save_settings
+
+    original = load_settings()
+    settings = copy.deepcopy(original)
+    settings["parking"]["tariff"]["motorcycle_day"] = 3500
+    settings["parking"]["tariff"]["motorcycle_night"] = 7000
+    settings["parking"]["tariff"]["car_first_2h"] = 22000
+    settings["parking"]["tariff"]["car_extra_hour"] = 11000
+    settings["parking"]["grace_period_minutes"] = 15
+    settings["parking"]["day_start"] = "06:00"
+    settings["parking"]["night_start"] = "22:00"
+    settings["ai"]["plate_tolerance"] = 1
+    settings["ai"]["evidence_mode"] = "both"
+    save_settings(settings)
+
+    try:
+        res = client.get("/api/v1/settings")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["parking"]["tariff"]["motorcycle_day"] == 3500
+        assert data["ai"]["plate_tolerance"] == 1
+
+        # Day/night motorcycle tickets
+        day = datetime.datetime(2026, 11, 12, 10, 0)
+        night = datetime.datetime(2026, 11, 12, 23, 0)
+        assert calculate_parking_fee("motorcycle", "GUEST", 60, entry_time=day) == 3500
+        assert calculate_parking_fee("motorcycle", "GUEST", 60, entry_time=night) == 7000
+        # Grace period
+        assert calculate_parking_fee("motorcycle", "GUEST", 10, entry_time=day) == 0
+        # Car: first 2h + extra started hour
+        assert calculate_parking_fee("car", "GUEST", 60, entry_time=day) == 22000
+        assert calculate_parking_fee("car", "GUEST", 121, entry_time=day) == 33000
+        # Residents park free
+        assert calculate_parking_fee("car", "RESIDENT", 1000, entry_time=day) == 0
+
+        storage_res = client.get("/api/v1/settings/storage")
+        assert storage_res.status_code == 200
+        assert "folders" in storage_res.json()
+
+        cleanup_res = client.post(
+            "/api/v1/settings/cleanup",
+            json={"storage": {"video_retention_days": 36500, "crop_retention_days": 36500}},
+        )
+        assert cleanup_res.status_code == 200
+        assert cleanup_res.json()["status"] == "success"
+
+        db_res = client.get("/api/v1/settings/database/status")
+        assert db_res.status_code == 200
+        assert "connected" in db_res.json()
+    finally:
+        save_settings(original)
+
 
 if __name__ == "__main__":
     setup_module()
@@ -137,4 +219,5 @@ if __name__ == "__main__":
     test_analytics_kpis()
     test_video_upload_and_job_lifecycle()
     test_plates_records_and_trace()
+    test_settings_and_tariffs()
     print("[SUCCESS] All API endpoint tests passed flawlessly!")

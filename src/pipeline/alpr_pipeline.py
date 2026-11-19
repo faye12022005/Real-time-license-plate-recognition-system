@@ -1,412 +1,970 @@
-"""ALPR pipeline orchestrator connecting Reader -> Detector -> Tracker -> OCR -> DB."""
+"""Detector -> OCR -> tracker orchestration for files and live cameras."""
 
-import datetime
-import os
+from __future__ import annotations
+
+import csv
+import json
+import re
+import threading
 import time
 import uuid
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
-import cv2  # type: ignore
-import numpy as np  # type: ignore
+from typing import Callable, Optional
 
-from config.settings import (
-    CAPTURES_DIR,
-    DETECTOR_CONF_THRESHOLD,
-    DETECTOR_DEVICE,
-    DETECTOR_IOU_THRESHOLD,
-    PLATE_CROP_PADDING,
-    SAMPLES_DIR,
+import cv2
+import numpy as np
+
+from config import settings
+from src.core.detector import (
+    PlateDetector,
+    VehicleDetector,
+    map_vehicle_type,
+    select_vehicle_for_plate,
 )
-from src.core.detector import PlateDetection, PlateDetector
-from src.core.ocr import PlateOCR, RapidOCR
-from src.core.tracker import VehicleTracker
-from src.database.connection import init_db
-from src.database.repository import (
-    insert_plate,
-    insert_video_job,
-    update_video_job_progress,
+from src.core.ocr import PlateOCR
+from src.core.tracker import IoUTracker
+from src.database.repository import PlateRepository
+from src.models import OCRResult, PlateRecord, ProcessingResult, VideoJob
+from src.pipeline.stream_reader import StreamReader
+from src.utils.image_processing import (
+    crop_with_padding,
+    draw_plate_label,
+    estimate_plate_color,
+    format_seconds,
+    quality_score,
 )
-from src.pipeline.stream_reader import VideoStreamReader
-from src.utils.image_processing import crop_plate_roi
-from src.utils.plate_validator import is_valid_plate, normalize_plate
+from src.utils.logger import get_logger
+from src.utils.plate_validator import (
+    canonicalize_plate,
+    format_plate,
+    is_valid_plate,
+    province_name,
+)
+from src.utils.source import camera_label, redact_source, safe_filename
+
+LOGGER = get_logger(__name__)
+
+
+def _notify_job(
+    callback: Callable[[VideoJob], None] | None,
+    job: VideoJob,
+) -> None:
+    """Invoke an optional job progress callback without breaking processing."""
+    if callback is None:
+        return
+    try:
+        callback(job)
+    except Exception as exc:  # noqa: BLE001 - callbacks must not abort the job
+        LOGGER.debug("Job callback failed: %s", exc)
+
+
+@dataclass
+class TrackState:
+    """Aggregated OCR evidence for one tracked plate."""
+
+    track_id: int
+    votes: Counter = field(default_factory=Counter)
+    vote_scores: Counter = field(default_factory=Counter)
+    vehicle_votes: Counter = field(default_factory=Counter)
+    plate_type_votes: Counter = field(default_factory=Counter)
+    best_text: str = ""
+    best_confidence: float = 0.0
+    best_quality: float = 0.0
+    best_crop: Optional[np.ndarray] = None
+    first_pts_ms: int = 0
+    last_pts_ms: int = 0
+    last_frame_index: int = 0
+    emitted: bool = False
+    vehicle_type: str = "car"
+    plate_type: str = "white"
+    source: str = ""
+
+
+def _trailing_digits(plate: str) -> str:
+    match = re.search(r"(\d{4})$", plate)
+    return match.group(1) if match else plate[-4:]
+
+
+def _is_subsequence(shorter: str, longer: str) -> bool:
+    iterator = iter(longer)
+    return all(character in iterator for character in shorter)
+
+
+def _has_only_letter_insertions(shorter: str, longer: str) -> bool:
+    """True when `longer` adds only letters around the characters of `shorter`.
+
+    This matches dash misreads inside the series (17FF21618 -> 17F21618) but
+    rejects a candidate that simply dropped a registration digit
+    (99V13428 -> 99V3428).
+    """
+    if not _is_subsequence(shorter, longer):
+        return False
+    extra: list[str] = []
+    position = 0
+    for character in longer:
+        if position < len(shorter) and character == shorter[position]:
+            position += 1
+        else:
+            extra.append(character)
+    return bool(extra) and all(character.isalpha() for character in extra)
 
 
 class ALPRPipeline:
-    """Full-featured ALPR pipeline supporting both video file processing and frame-by-frame stream."""
+    """End-to-end license plate recognition pipeline."""
 
     def __init__(
         self,
-        job_id: Optional[str] = None,
-        detector: Optional[PlateDetector] = None,
-        ocr: Optional[PlateOCR] = None,
+        plate_model_path: str | Path = settings.PLATE_MODEL_PATH,
+        vehicle_model_path: Optional[str | Path] = settings.VEHICLE_MODEL_PATH,
+        char_model_path: str | Path = settings.CHAR_MODEL_PATH,
+        ocr_mode: str = "hybrid",
+        gpu: bool = False,
+        plate_confidence: float = settings.PLATE_CONFIDENCE,
+        vehicle_confidence: float = settings.VEHICLE_CONFIDENCE,
+        char_confidence: float = settings.CHAR_CONFIDENCE,
+        imgsz: int = settings.IMAGE_SIZE,
+        device: Optional[str] = None,
+        stride: int = settings.FRAME_STRIDE,
+        min_votes: int = settings.MIN_PLATE_VOTES,
+        high_confidence_accept: float = settings.HIGH_CONFIDENCE_ACCEPT,
+        track_iou: float = settings.TRACK_IOU_THRESHOLD,
+        track_max_age: int = settings.TRACK_MAX_AGE,
+        save_crops: bool = settings.SAVE_CROPS,
     ) -> None:
-        self.job_id = job_id or f"job-{int(time.time() * 1000)}"
-        self.detector = detector or PlateDetector(
-            conf_thresh=DETECTOR_CONF_THRESHOLD,
-            iou_thresh=DETECTOR_IOU_THRESHOLD,
-            device=DETECTOR_DEVICE,
-        )
-        self.ocr = ocr or RapidOCR()
-        self.tracker = VehicleTracker()
-        self.frame_count = 0
-        self.processed_frames = 0
-        self.detected_plates: List[Dict[str, Any]] = []
-        self.seen_plates_in_job: Set[str] = set()
-        init_db()
-
-    def process_frame(self, frame: np.ndarray) -> List[Dict[str, Any]]:
-        """Process a single video frame: detect plates -> OCR -> track -> store."""
-        self.frame_count += 1
-        detections: List[PlateDetection] = self.detector.detect(frame)
-        new_plates_this_frame: List[Dict[str, Any]] = []
-
-        active_tracks = self.tracker.update(detections)
-
-        for track in active_tracks:
-            if track.track_id in self.seen_plates_in_job:
-                continue
-
-            roi = track.best_roi if track.best_roi is not None else (
-                crop_plate_roi(frame, track.bbox, padding=PLATE_CROP_PADDING)
-            )
-
-            ocr_res = self.ocr.recognize(roi, class_hint=track.class_name)
-            if not ocr_res:
-                continue
-
-            plate_norm = ocr_res.plate_number
-            if not is_valid_plate(plate_norm):
-                continue
-
-            self.seen_plates_in_job.add(track.track_id)
-
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            pts_ms = int(time.time() * 1000)
-            mins = (pts_ms // 60000) % 60
-            secs = (pts_ms // 1000) % 60
-            video_time_str = f"{mins:02d}:{secs:02d}"
-
-            # Save crop image
-            job_captures_dir = CAPTURES_DIR / self.job_id
-            job_captures_dir.mkdir(parents=True, exist_ok=True)
-            crop_filename = f"plate_{track.track_id}_{plate_norm}.jpg"
-            crop_path = job_captures_dir / crop_filename
-            cv2.imwrite(str(crop_path), roi)
-
-            plate_record = {
-                "id": str(uuid.uuid4()),
-                "job_id": self.job_id,
-                "job_filename": "",
-                "track_id": track.track_id,
-                "plate_number": plate_norm,
-                "plate_display": ocr_res.plate_display,
-                "province": ocr_res.province,
-                "plate_type": ocr_res.plate_type,
-                "vehicle_type": ocr_res.vehicle_type,
-                "confidence_score": ocr_res.confidence_score,
-                "quality_score": ocr_res.quality_score,
-                "crop_image_url": f"/static/captures/{self.job_id}/{crop_filename}",
-                "pts_ms": pts_ms,
-                "video_time_str": video_time_str,
-                "timestamp": now_iso,
-                "speed_kmh": round(35.0 + (track.track_id % 20) * 1.5, 1),
-                "video_url": "",
-            }
-
-            insert_plate(plate_record)
-            new_plates_this_frame.append(plate_record)
-            self.detected_plates.append(plate_record)
-            self.tracker.process(plate_norm)
-
-        self.processed_frames += 1
-        return new_plates_this_frame
-
-    def _draw_annotated_frame(
-        self,
-        frame: np.ndarray,
-        active_tracks: List[Any],
-        track_plate_map: Dict[int, Dict[str, Any]],
-        time_str: str,
-        detected_count: int,
-    ) -> np.ndarray:
-        """Draw bounding boxes, recognized license plates, and HUD overlay on the frame."""
-        annotated = frame.copy()
-        h, w = annotated.shape[:2]
-
-        for track in active_tracks:
-            x1, y1, x2, y2 = [int(v) for v in track.bbox]
-            x1 = max(0, min(w - 1, x1))
-            x2 = max(0, min(w - 1, x2))
-            y1 = max(0, min(h - 1, y1))
-            y2 = max(0, min(h - 1, y2))
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            plate_info = track_plate_map.get(track.track_id)
-            if plate_info:
-                plate_text = plate_info.get("plate_display") or plate_info.get("plate_number") or ""
-                conf_pct = int(plate_info.get("confidence_score", 0.95) * 100)
-                label = f"{plate_text} ({conf_pct}%)"
-                box_color = (46, 204, 113)   # Emerald Green
-                corner_color = (0, 255, 200)  # Bright Mint
-            else:
-                label = f"SCAN #{track.track_id}"
-                box_color = (0, 165, 255)    # Orange
-                corner_color = (0, 215, 255)
-
-            # 1. Bounding box rectangle
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 2)
-
-            # 2. Hi-tech Corner Brackets
-            bracket_len = min(15, max(5, (x2 - x1) // 4), max(5, (y2 - y1) // 4))
-            # Top-Left
-            cv2.line(annotated, (x1, y1), (x1 + bracket_len, y1), corner_color, 3)
-            cv2.line(annotated, (x1, y1), (x1, y1 + bracket_len), corner_color, 3)
-            # Top-Right
-            cv2.line(annotated, (x2, y1), (x2 - bracket_len, y1), corner_color, 3)
-            cv2.line(annotated, (x2, y1), (x2, y1 + bracket_len), corner_color, 3)
-            # Bottom-Left
-            cv2.line(annotated, (x1, y2), (x1 + bracket_len, y2), corner_color, 3)
-            cv2.line(annotated, (x1, y2), (x1, y2 - bracket_len), corner_color, 3)
-            # Bottom-Right
-            cv2.line(annotated, (x2, y2), (x2 - bracket_len, y2), corner_color, 3)
-            cv2.line(annotated, (x2, y2), (x2, y2 - bracket_len), corner_color, 3)
-
-            # 3. Label Badge background & Text
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.55
-            thickness = 2
-            (label_w, label_h), _ = cv2.getTextSize(label, font, font_scale, thickness)
-
-            box_y1 = max(0, y1 - label_h - 10)
-            box_y2 = y1
-            box_x2 = min(w - 1, x1 + label_w + 12)
-
-            cv2.rectangle(annotated, (x1, box_y1), (box_x2, box_y2), (18, 18, 18), -1)
-            cv2.rectangle(annotated, (x1, box_y1), (box_x2, box_y2), box_color, 1)
-
-            cv2.putText(
-                annotated,
-                label,
-                (x1 + 6, box_y2 - 5),
-                font,
-                font_scale,
-                (255, 255, 255),
-                thickness,
-                cv2.LINE_AA,
-            )
-
-        # 4. Top Status HUD (Camera timestamp & ALPR metrics)
-        hud_bg_w = min(420, w - 20)
-        cv2.rectangle(annotated, (15, 12), (15 + hud_bg_w, 46), (15, 15, 15), -1)
-        cv2.rectangle(annotated, (15, 12), (15 + hud_bg_w, 46), (70, 70, 70), 1)
-
-        cv2.circle(annotated, (32, 29), 6, (0, 0, 230), -1)
-        cv2.circle(annotated, (32, 29), 3, (100, 100, 255), -1)
-
-        hud_text = f"SMART ALPR AI | {time_str} | PLATES: {detected_count}"
-        cv2.putText(
-            annotated,
-            hud_text,
-            (46, 34),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
+        self.plate_detector = PlateDetector(
+            model_path=plate_model_path,
+            confidence=plate_confidence,
+            iou=settings.IOU_THRESHOLD,
+            imgsz=imgsz,
+            device=device,
         )
 
-        return annotated
-
-    def process_video_job(self, job_id: str, video_path: Path, frame_step: int = 2) -> None:
-        """Execute full ALPR analysis on a video file asynchronously with progress updates."""
-        self.job_id = job_id
-        video_filename = video_path.name
-        job_captures_dir = CAPTURES_DIR / job_id
-        job_captures_dir.mkdir(parents=True, exist_ok=True)
-
-        writer: Optional[cv2.VideoWriter] = None
-        annotated_path: Optional[Path] = None
-        annotated_url: Optional[str] = None
-
-        try:
-            reader = VideoStreamReader(str(video_path))
-            if not reader.open() or reader.metadata is None:
-                update_video_job_progress(
-                    job_id,
-                    stage="FAILED",
-                    error_message="Không thể mở hoặc phân giải định dạng video",
-                )
-                return
-
-            metadata = reader.metadata
-            total_frames = max(1, metadata.total_frames)
-
-            # Khởi tạo VideoWriter xuất video đã vẽ bounding box (Annotated Video)
-            annotated_filename = f"annotated_{video_filename}"
-            if not annotated_filename.lower().endswith(".mp4"):
-                annotated_filename = f"{Path(annotated_filename).stem}.mp4"
-            annotated_path = SAMPLES_DIR / annotated_filename
-            annotated_url = f"/static/videos/{annotated_filename}"
-
-            fps = metadata.fps if metadata.fps and metadata.fps > 0 else 25.0
-            width = metadata.width
-            height = metadata.height
+        self.vehicle_detector: Optional[VehicleDetector] = None
+        if vehicle_model_path is not None and Path(vehicle_model_path).exists():
             try:
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                writer = cv2.VideoWriter(str(annotated_path), fourcc, fps, (width, height))
-            except Exception as w_err:
-                print(f"[ALPR] VideoWriter init warning: {w_err}")
+                self.vehicle_detector = VehicleDetector(
+                    model_path=vehicle_model_path,
+                    confidence=vehicle_confidence,
+                    iou=settings.IOU_THRESHOLD,
+                    imgsz=imgsz,
+                    device=device,
+                )
+            except Exception as exc:  # noqa: BLE001 - vehicle model is optional
+                LOGGER.warning("Vehicle detector disabled: %s", exc)
+        else:
+            LOGGER.warning("Vehicle model not found; vehicle_type will default to 'car'.")
+
+        self.ocr = PlateOCR(
+            char_model_path=char_model_path,
+            mode=ocr_mode,
+            gpu=gpu,
+            char_confidence=char_confidence,
+            imgsz=imgsz,
+            device=device,
+        )
+        self.tracker = IoUTracker(iou_threshold=track_iou, max_age=track_max_age)
+        self.stride = max(1, int(stride))
+        self.min_votes = max(1, int(min_votes))
+        self.high_confidence_accept = float(high_confidence_accept)
+        self.save_crops = bool(save_crops)
+
+    def process_video(
+        self,
+        video_path: str | Path,
+        output_dir: str | Path | None = None,
+        save_annotated: bool = True,
+        display: bool = False,
+        save_db: bool = True,
+        job_id: str | None = None,
+        progress_callback: Callable[[VideoJob], None] | None = None,
+        display_name: str | None = None,
+    ) -> ProcessingResult:
+        """Process one video file and return validated plate records."""
+        video_path = Path(video_path).resolve()
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video not found: {video_path}")
+
+        job_id = job_id or f"job-{int(time.time() * 1000)}"
+        default_output = settings.OUTPUT_DIR / f"{video_path.stem}_{job_id}"
+        output_path = Path(output_dir).resolve() if output_dir else default_output
+        crops_dir = output_path / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        job = VideoJob(
+            id=job_id,
+            filename=display_name or video_path.name,
+            file_size_bytes=video_path.stat().st_size,
+            stage="PROCESSING",
+            created_at=created_at,
+            video_url=str(video_path),
+        )
+
+        repository: Optional[PlateRepository] = None
+        if save_db:
+            try:
+                repository = PlateRepository()
+                repository.save_job(job)
+            except Exception as exc:  # noqa: BLE001 - persistence is optional
+                LOGGER.warning("Database persistence disabled: %s", exc)
+                repository = None
+
+        reader = StreamReader(video_path)
+        job.total_frames = reader.frame_count
+        job.duration_seconds = reader.duration_seconds
+        _notify_job(progress_callback, job)
+
+        output_video: Optional[Path] = None
+        writer: Optional[cv2.VideoWriter] = None
+        if save_annotated:
+            output_video = output_path / f"{video_path.stem}_annotated.mp4"
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            size = (reader.width, reader.height)
+            writer = cv2.VideoWriter(str(output_video), fourcc, reader.fps, size)
+            if not writer.isOpened():
+                LOGGER.warning("Could not open video writer for %s", output_video)
                 writer = None
+                output_video = None
 
-            # Stage 1: TRANSCODING (0% -> 20%)
-            update_video_job_progress(
-                job_id,
-                stage="TRANSCODING",
-                stage_progress_pct=100.0,
-                overall_progress_pct=20.0,
-                total_frames=total_frames,
-                duration_seconds=metadata.duration_seconds,
-            )
+        states: dict[int, TrackState] = {}
+        processed_frames = 0
+        last_report = time.perf_counter()
+        start_time = time.perf_counter()
 
-            # Stage 2: PROCESSING (20% -> 100%)
-            update_video_job_progress(job_id, stage="PROCESSING")
+        LOGGER.info(
+            "Processing %s (%.1fs, %d frames, %.1f fps)",
+            video_path.name,
+            reader.duration_seconds,
+            reader.frame_count,
+            reader.fps,
+        )
 
-            processed_count = 0
-            detected_plates_count = 0
-            recorded_tracks: Set[int] = set()
-            track_plate_map: Dict[int, Dict[str, Any]] = {}
-            active_tracks: List[Any] = []
+        reader.start()
+        try:
+            for frame_index, frame in enumerate(reader.frames()):
+                processed_frames = frame_index + 1
 
-            start_time = time.time()
-            self.tracker.reset()
+                if frame_index % self.stride == 0:
+                    self._process_frame(frame, frame_index, reader.fps, states)
 
-            while True:
-                ret, frame, frame_idx, pts_ms, time_str = reader.read_frame()
-                if not ret or frame is None:
+                if writer is not None:
+                    writer.write(frame)
+
+                if display:
+                    try:
+                        cv2.imshow("ALPR", frame)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            break
+                    except cv2.error:
+                        display = False
+
+                now = time.perf_counter()
+                if now - last_report >= 2.0:
+                    elapsed = max(1e-6, now - start_time)
+                    current_fps = processed_frames / elapsed
+                    job.processed_frames = processed_frames
+                    job.current_fps = current_fps
+                    job.overall_progress_pct = (
+                        100.0 * processed_frames / reader.frame_count
+                        if reader.frame_count
+                        else 0.0
+                    )
+                    if current_fps > 0 and reader.frame_count > processed_frames:
+                        job.eta_seconds = (reader.frame_count - processed_frames) / current_fps
+                    LOGGER.info(
+                        "Progress %5.1f%% | frame %d/%d | %.1f fps | ETA %s",
+                        job.overall_progress_pct,
+                        processed_frames,
+                        reader.frame_count,
+                        current_fps,
+                        format_seconds(job.eta_seconds),
+                    )
+                    _notify_job(progress_callback, job)
+                    last_report = now
+        finally:
+            reader.stop()
+            if writer is not None:
+                writer.release()
+            if display:
+                try:
+                    cv2.destroyAllWindows()
+                except cv2.error:
+                    pass
+
+        elapsed = max(1e-6, time.perf_counter() - start_time)
+        records = self._build_records(
+            states=states,
+            job=job,
+            video_path=video_path,
+            crops_dir=crops_dir,
+        )
+
+        job.stage = "COMPLETED"
+        job.stage_progress_pct = 100.0
+        job.overall_progress_pct = 100.0
+        job.processed_frames = processed_frames
+        job.current_fps = processed_frames / elapsed
+        job.eta_seconds = 0.0
+        job.detected_plates_count = len(records)
+        job.completed_at = datetime.now(timezone.utc).isoformat()
+        _notify_job(progress_callback, job)
+
+        results_json = output_path / "results.json"
+        results_csv = output_path / "results.csv"
+        self._write_results(results_json, results_csv, job, records)
+
+        if repository is not None:
+            try:
+                repository.save_job(job)
+                repository.save_records(records)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Could not persist results: %s", exc)
+
+        LOGGER.info(
+            "Finished %s in %.1fs | %d plate record(s) | output: %s",
+            video_path.name,
+            elapsed,
+            len(records),
+            output_path,
+        )
+        return ProcessingResult(
+            job=job,
+            records=records,
+            output_dir=output_path,
+            output_video=output_video,
+            results_json=results_json,
+            results_csv=results_csv,
+        )
+
+    def process_camera(
+        self,
+        source: str | int,
+        output_dir: str | Path | None = None,
+        save_annotated: bool = False,
+        display: bool = True,
+        save_db: bool = True,
+        max_frames: int | None = None,
+        duration_seconds: float | None = None,
+        reconnect_attempts: int = settings.STREAM_RECONNECT_ATTEMPTS,
+        camera_name: str | None = None,
+        stop_event: threading.Event | None = None,
+        frame_callback: Callable[[np.ndarray], None] | None = None,
+        record_callback: Callable[[list[PlateRecord]], None] | None = None,
+    ) -> ProcessingResult:
+        """Process a live camera/stream and emit plate records as they are confirmed.
+
+        ``stop_event`` lets a caller stop the loop externally. ``frame_callback``
+        receives every annotated frame (for MJPEG/WebSocket streaming) and
+        ``record_callback`` is notified whenever new records are confirmed.
+        """
+        job_id = f"job-{int(time.time() * 1000)}"
+        label = camera_label(source, camera_name)
+        output_path = (
+            Path(output_dir).resolve()
+            if output_dir
+            else settings.OUTPUT_DIR / f"{label}_{job_id}"
+        )
+        crops_dir = output_path / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        source_url = redact_source(source)
+        job = VideoJob(
+            id=job_id,
+            filename=label,
+            file_size_bytes=0,
+            stage="PROCESSING",
+            created_at=created_at,
+            video_url=source_url,
+        )
+
+        repository: Optional[PlateRepository] = None
+        if save_db:
+            try:
+                repository = PlateRepository()
+                repository.save_job(job)
+            except Exception as exc:  # noqa: BLE001 - persistence is optional
+                LOGGER.warning("Database persistence disabled: %s", exc)
+                repository = None
+
+        reader = StreamReader(
+            source,
+            reconnect_attempts=reconnect_attempts,
+            drop_old_frames=True,
+        )
+        job.total_frames = reader.frame_count
+        job.duration_seconds = reader.duration_seconds
+
+        output_video: Optional[Path] = (
+            output_path / f"{label}_annotated.mp4" if save_annotated else None
+        )
+        writer: Optional[cv2.VideoWriter] = None
+        writer_failed = False
+
+        states: dict[int, TrackState] = {}
+        records: list[PlateRecord] = []
+        processed_frames = 0
+        started_at = time.perf_counter()
+        last_report = started_at
+        stopped = False
+
+        LOGGER.info(
+            "Starting real-time camera %s (fps=%.1f, reconnect=%s)",
+            label,
+            reader.fps,
+            reconnect_attempts,
+        )
+
+        reader.start()
+        try:
+            for frame_index, frame in enumerate(reader.frames()):
+                if stop_event is not None and stop_event.is_set():
+                    stopped = True
+                    break
+                if (
+                    max_frames is not None
+                    and max_frames > 0
+                    and frame_index >= max_frames
+                ):
+                    break
+                if (
+                    duration_seconds is not None
+                    and duration_seconds > 0
+                    and time.perf_counter() - started_at >= duration_seconds
+                ):
                     break
 
-                processed_count += 1
+                processed_frames = frame_index + 1
 
-                # Chạy AI Detector và Tracker theo frame_step
-                if processed_count % frame_step == 0:
-                    detections = self.detector.detect(frame)
-                    active_tracks = self.tracker.update(detections)
-
-                    for track in active_tracks:
-                        if track.track_id not in recorded_tracks and track.best_roi is not None:
-                            ocr_res = self.ocr.recognize(track.best_roi, class_hint=track.class_name)
-                            if ocr_res:
-                                recorded_tracks.add(track.track_id)
-                                detected_plates_count += 1
-                                track_plate_map[track.track_id] = {
-                                    "plate_number": ocr_res.plate_number,
-                                    "plate_display": ocr_res.plate_display,
-                                    "confidence_score": ocr_res.confidence_score,
-                                    "vehicle_type": ocr_res.vehicle_type,
-                                }
-
-                                crop_filename = f"plate_{track.track_id}_{ocr_res.plate_number}.jpg"
-                                crop_file_path = job_captures_dir / crop_filename
-                                cv2.imwrite(str(crop_file_path), track.best_roi)
-
-                                crop_url = f"/static/captures/{job_id}/{crop_filename}"
-                                video_web_url = f"/static/videos/{video_filename}"
-                                now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-                                record_data = {
-                                    "id": f"plate-{job_id}-{track.track_id}",
-                                    "job_id": job_id,
-                                    "job_filename": video_filename,
-                                    "track_id": track.track_id,
-                                    "plate_number": ocr_res.plate_number,
-                                    "plate_display": ocr_res.plate_display,
-                                    "province": ocr_res.province,
-                                    "plate_type": ocr_res.plate_type,
-                                    "vehicle_type": ocr_res.vehicle_type,
-                                    "confidence_score": ocr_res.confidence_score,
-                                    "quality_score": ocr_res.quality_score,
-                                    "crop_image_url": crop_url,
-                                    "pts_ms": pts_ms,
-                                    "video_time_str": time_str,
-                                    "timestamp": now_iso,
-                                    "speed_kmh": round(35.0 + (track.track_id % 20) * 1.5, 1),
-                                    "video_url": video_web_url,
-                                }
-                                insert_plate(record_data)
-
-                # Vẽ Bounding Box và HUD lên frame rồi ghi vào video đã xử lý
-                if writer is not None and writer.isOpened():
-                    annotated_frame = self._draw_annotated_frame(
+                if frame_index % self.stride == 0:
+                    self._process_frame(
                         frame,
-                        active_tracks,
-                        track_plate_map,
-                        time_str,
-                        detected_plates_count,
+                        frame_index,
+                        reader.fps,
+                        states,
+                        pts_ms=int(round((time.perf_counter() - started_at) * 1000.0)),
                     )
-                    writer.write(annotated_frame)
-
-                # Cập nhật tiến trình định kỳ mỗi 20 frames
-                if processed_count % 20 == 0 or processed_count == total_frames:
-                    elapsed = max(0.01, time.time() - start_time)
-                    current_fps = round(processed_count / elapsed, 1)
-                    rem_frames = max(0, total_frames - processed_count)
-                    eta_sec = round(rem_frames / max(1.0, current_fps), 1)
-
-                    stage_pct = min(100.0, round((processed_count / total_frames) * 100.0, 1))
-                    overall_pct = min(100.0, round(20.0 + (stage_pct * 0.8), 1))
-
-                    update_video_job_progress(
-                        job_id,
-                        stage="PROCESSING",
-                        stage_progress_pct=stage_pct,
-                        overall_progress_pct=overall_pct,
-                        processed_frames=processed_count,
-                        current_fps=current_fps,
-                        eta_seconds=eta_sec,
-                        detected_plates_count=detected_plates_count,
+                    new_records = self._collect_realtime_records(
+                        states=states,
+                        job=job,
+                        video_source=source_url,
+                        crops_dir=crops_dir,
                     )
+                    if new_records:
+                        records.extend(new_records)
+                        self._persist_records(repository, new_records)
+                        if record_callback is not None:
+                            record_callback(new_records)
+                        LOGGER.info(
+                            "New plate(s): %s",
+                            ", ".join(record.plate_display for record in new_records),
+                        )
 
-            reader.release()
+                if frame_callback is not None:
+                    try:
+                        frame_callback(frame)
+                    except Exception as exc:  # noqa: BLE001 - streaming is best effort
+                        LOGGER.debug("Frame callback failed: %s", exc)
+
+                if save_annotated and writer is None and not writer_failed:
+                    height, width = frame.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(
+                        str(output_video), fourcc, reader.fps, (width, height)
+                    )
+                    if not writer.isOpened():
+                        LOGGER.warning(
+                            "Could not open video writer for %s", output_video
+                        )
+                        writer = None
+                        writer_failed = True
+                        output_video = None
+
+                if writer is not None:
+                    writer.write(frame)
+
+                if display:
+                    try:
+                        cv2.imshow("ALPR Camera", frame)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            stopped = True
+                            break
+                    except cv2.error:
+                        display = False
+
+                now = time.perf_counter()
+                if now - last_report >= 2.0:
+                    elapsed = max(1e-6, now - started_at)
+                    job.processed_frames = processed_frames
+                    job.current_fps = processed_frames / elapsed
+                    LOGGER.info(
+                        "Live frame %d | %.1f fps | %d plate(s) confirmed",
+                        processed_frames,
+                        job.current_fps,
+                        len(records),
+                    )
+                    last_report = now
+        except KeyboardInterrupt:
+            stopped = True
+            LOGGER.warning("Real-time camera interrupted by user.")
+        finally:
+            reader.stop()
             if writer is not None:
                 writer.release()
-                writer = None
+            if display:
+                try:
+                    cv2.destroyAllWindows()
+                except cv2.error:
+                    pass
 
-            # Kiểm tra xem video đã xử lý có hợp lệ không
-            processed_video_final_url = None
-            if annotated_path and annotated_path.is_file() and annotated_path.stat().st_size > 0:
-                processed_video_final_url = annotated_url
-
-            # Stage 3: COMPLETED
-            completed_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            update_video_job_progress(
-                job_id,
-                stage="COMPLETED",
-                stage_progress_pct=100.0,
-                overall_progress_pct=100.0,
-                processed_frames=total_frames,
-                current_fps=0.0,
-                eta_seconds=0.0,
-                detected_plates_count=detected_plates_count,
-                processed_video_url=processed_video_final_url,
-                completed_at=completed_iso,
-            )
-
-        except Exception as e:
-            if writer is not None:
-                writer.release()
-            import traceback
-            traceback.print_exc()
-            update_video_job_progress(
-                job_id,
-                stage="FAILED",
-                error_message=f"Lỗi xử lý luồng AI: {str(e)}",
-            )
-
-    def get_progress(self) -> Dict[str, Any]:
-        """Return current progress stats."""
-        return {
-            "frame_count": self.frame_count,
-            "processed_frames": self.processed_frames,
-            "detected_plates_count": len(self.detected_plates),
+        remaining_states = {
+            track_id: state
+            for track_id, state in states.items()
+            if not state.emitted
         }
+        if remaining_states:
+            final_records = self._build_records(
+                states=remaining_states,
+                job=job,
+                video_path=source_url,
+                crops_dir=crops_dir,
+            )
+            if final_records:
+                records.extend(final_records)
+                self._persist_records(repository, final_records)
+                if record_callback is not None:
+                    record_callback(final_records)
+
+        records.sort(key=lambda record: (record.pts_ms, record.plate_number))
+
+        elapsed = max(1e-6, time.perf_counter() - started_at)
+        job.stage = "STOPPED" if stopped else "COMPLETED"
+        job.stage_progress_pct = 100.0
+        job.overall_progress_pct = 100.0
+        job.processed_frames = processed_frames
+        job.current_fps = processed_frames / elapsed
+        job.eta_seconds = 0.0
+        job.detected_plates_count = len(records)
+        job.completed_at = datetime.now(timezone.utc).isoformat()
+
+        results_json = output_path / "results.json"
+        results_csv = output_path / "results.csv"
+        self._write_results(results_json, results_csv, job, records)
+
+        if repository is not None:
+            try:
+                repository.save_job(job)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Could not persist camera job: %s", exc)
+
+        LOGGER.info(
+            "Camera %s stopped after %.1fs | %d plate record(s) | output: %s",
+            label,
+            elapsed,
+            len(records),
+            output_path,
+        )
+        return ProcessingResult(
+            job=job,
+            records=records,
+            output_dir=output_path,
+            output_video=output_video,
+            results_json=results_json,
+            results_csv=results_csv,
+        )
+
+    def _collect_realtime_records(
+        self,
+        states: dict[int, TrackState],
+        job: VideoJob,
+        video_source: str,
+        crops_dir: Path,
+    ) -> list[PlateRecord]:
+        """Emit records for tracks that reached the support threshold and drop expired state."""
+        active_tracks = set(self.tracker.tracks.keys())
+        eligible: dict[int, TrackState] = {}
+
+        for track_id, state in list(states.items()):
+            is_active = track_id in active_tracks
+            if state.emitted:
+                if not is_active:
+                    states.pop(track_id, None)
+                continue
+            if self._is_candidate_ready(state):
+                eligible[track_id] = state
+            elif not is_active:
+                states.pop(track_id, None)
+
+        if not eligible:
+            return []
+
+        records = self._build_records(
+            states=eligible,
+            job=job,
+            video_path=video_source,
+            crops_dir=crops_dir,
+        )
+        for track_id, state in eligible.items():
+            state.emitted = True
+            if track_id not in active_tracks:
+                states.pop(track_id, None)
+        return records
+
+    def _is_candidate_ready(self, state: TrackState) -> bool:
+        if not state.votes:
+            return False
+        plate_number = max(
+            state.votes,
+            key=lambda candidate: (
+                state.vote_scores.get(candidate, 0.0)
+                / max(1, state.votes.get(candidate, 1)),
+                state.votes.get(candidate, 0),
+            ),
+        )
+        votes = state.votes.get(plate_number, 0)
+        average_confidence = state.vote_scores.get(plate_number, 0.0) / max(1, votes)
+        return (
+            votes >= self.min_votes
+            or average_confidence >= self.high_confidence_accept
+        )
+
+    @staticmethod
+    def _persist_records(
+        repository: Optional[PlateRepository],
+        records: list[PlateRecord],
+    ) -> None:
+        if repository is None or not records:
+            return
+        try:
+            repository.save_records(records)
+        except Exception as exc:  # noqa: BLE001 - keep the camera running
+            LOGGER.warning("Could not persist real-time records: %s", exc)
+
+    def _process_frame(
+        self,
+        frame: np.ndarray,
+        frame_index: int,
+        fps: float,
+        states: dict[int, TrackState],
+        pts_ms: int | None = None,
+    ) -> None:
+        plate_detections = self.plate_detector.predict(frame)
+        matches = self.tracker.update(plate_detections, frame_index)
+        if not plate_detections:
+            return
+
+        vehicle_detections = (
+            self.vehicle_detector.predict(frame) if self.vehicle_detector else []
+        )
+        if pts_ms is None:
+            pts_ms = int(round(frame_index / fps * 1000.0)) if fps > 0 else 0
+
+        for track, detection in matches:
+            crop = crop_with_padding(frame, detection.bbox, pad_ratio=0.15)
+            if crop.size == 0:
+                continue
+            ocr_result = self.ocr.read(crop)
+            plate_number = canonicalize_plate(ocr_result.text)
+            if not is_valid_plate(plate_number):
+                LOGGER.debug(
+                    "Discarded OCR candidate %r from track %d",
+                    ocr_result.text,
+                    track.track_id,
+                )
+                continue
+
+            state = states.get(track.track_id)
+            if state is None:
+                state = TrackState(track_id=track.track_id, first_pts_ms=pts_ms)
+                states[track.track_id] = state
+            state.last_frame_index = frame_index
+
+            crop_quality = quality_score(crop)
+            combined_confidence = self._combined_confidence(detection.confidence, ocr_result)
+
+            state.votes[plate_number] += 1
+            state.vote_scores[plate_number] += combined_confidence
+            state.last_pts_ms = pts_ms
+            state.source = ocr_result.source
+            estimated_color = estimate_plate_color(crop)
+            state.plate_type = estimated_color
+            state.plate_type_votes[estimated_color] += 1
+
+            vehicle = select_vehicle_for_plate(detection, vehicle_detections)
+            if vehicle is not None:
+                vehicle_type = map_vehicle_type(vehicle.class_name)
+                state.vehicle_type = vehicle_type
+                state.vehicle_votes[vehicle_type] += 1
+
+            is_better = (
+                combined_confidence > state.best_confidence
+                or (
+                    abs(combined_confidence - state.best_confidence) < 1e-9
+                    and crop_quality > state.best_quality
+                )
+            )
+            if is_better:
+                state.best_text = plate_number
+                state.best_confidence = combined_confidence
+                state.best_quality = crop_quality
+                state.best_crop = crop.copy()
+
+            draw_plate_label(
+                frame,
+                detection.bbox,
+                format_plate(plate_number),
+                combined_confidence,
+            )
+
+    @staticmethod
+    def _combined_confidence(
+        detection_confidence: float,
+        ocr_result: OCRResult,
+    ) -> float:
+        return float(
+            max(0.0, min(1.0, 0.6 * detection_confidence + 0.4 * ocr_result.confidence))
+        )
+
+    def _build_records(
+        self,
+        states: dict[int, TrackState],
+        job: VideoJob,
+        video_path: str | Path,
+        crops_dir: Path,
+    ) -> list[PlateRecord]:
+        candidate_groups: dict[str, list[tuple[TrackState, int, float]]] = defaultdict(list)
+        for state in states.values():
+            for plate_number, vote_count in state.votes.items():
+                if not vote_count:
+                    continue
+                average_confidence = state.vote_scores.get(plate_number, 0.0) / vote_count
+                if (
+                    vote_count < self.min_votes
+                    and average_confidence < self.high_confidence_accept
+                ):
+                    continue
+                if not is_valid_plate(plate_number):
+                    continue
+                candidate_groups[plate_number].append(
+                    (state, vote_count, average_confidence)
+                )
+
+        candidates: list[dict] = []
+        for plate_number, entries in candidate_groups.items():
+            group_states = [entry[0] for entry in entries]
+            best_state = max(
+                group_states,
+                key=lambda state: (
+                    state.vote_scores.get(plate_number, 0.0)
+                    / max(1, state.votes.get(plate_number, 1)),
+                    state.best_quality,
+                ),
+            )
+            candidates.append(
+                {
+                    "plate_number": plate_number,
+                    "states": group_states,
+                    "votes": sum(entry[1] for entry in entries),
+                    "confidence": max(entry[2] for entry in entries),
+                    "quality": best_state.best_quality,
+                    "first_pts_ms": min(state.first_pts_ms for state in group_states),
+                    "last_pts_ms": max(state.last_pts_ms for state in group_states),
+                    "tail": _trailing_digits(plate_number),
+                }
+            )
+
+        clusters: list[dict] = []
+        for candidate in sorted(candidates, key=lambda item: item["first_pts_ms"]):
+            for cluster in clusters:
+                if cluster["tail"] != candidate["tail"]:
+                    continue
+                if candidate["first_pts_ms"] - cluster["last_pts_ms"] > 3000:
+                    continue
+                if cluster["first_pts_ms"] - candidate["last_pts_ms"] > 3000:
+                    continue
+                cluster["members"].append(candidate)
+                cluster["first_pts_ms"] = min(
+                    cluster["first_pts_ms"], candidate["first_pts_ms"]
+                )
+                cluster["last_pts_ms"] = max(
+                    cluster["last_pts_ms"], candidate["last_pts_ms"]
+                )
+                break
+            else:
+                clusters.append(
+                    {
+                        "tail": candidate["tail"],
+                        "members": [candidate],
+                        "first_pts_ms": candidate["first_pts_ms"],
+                        "last_pts_ms": candidate["last_pts_ms"],
+                    }
+                )
+
+        records: list[PlateRecord] = []
+        for cluster in clusters:
+            members: list[dict] = cluster["members"]
+            base = max(
+                members,
+                key=lambda item: (item["votes"], item["confidence"]),
+            )
+            representative = base
+            shorter = [
+                member
+                for member in members
+                if member is not base
+                and len(member["plate_number"]) < len(base["plate_number"])
+                and _has_only_letter_insertions(
+                    member["plate_number"], base["plate_number"]
+                )
+                and member["confidence"] >= base["confidence"] - 0.03
+            ]
+            if shorter:
+                representative = max(
+                    shorter,
+                    key=lambda item: (
+                        item["confidence"],
+                        item["votes"],
+                        -len(item["plate_number"]),
+                    ),
+                )
+
+            plate_number = representative["plate_number"]
+            if not is_valid_plate(plate_number):
+                continue
+
+            member_states_by_track = {
+                state.track_id: state
+                for member in members
+                for state in member["states"]
+            }
+            member_states = list(member_states_by_track.values())
+            matching_states = [
+                state for state in member_states if state.votes.get(plate_number)
+            ]
+            best_state = max(
+                matching_states or member_states,
+                key=lambda state: (
+                    state.vote_scores.get(plate_number, 0.0)
+                    / max(1, state.votes.get(plate_number, 1)),
+                    state.best_confidence,
+                    state.best_quality,
+                ),
+            )
+
+            vehicle_votes: Counter = Counter()
+            plate_type_votes: Counter = Counter()
+            for state in member_states:
+                vehicle_votes.update(state.vehicle_votes)
+                plate_type_votes.update(state.plate_type_votes)
+            vehicle_type = (
+                vehicle_votes.most_common(1)[0][0]
+                if vehicle_votes
+                else best_state.vehicle_type
+            )
+            plate_type = (
+                plate_type_votes.most_common(1)[0][0]
+                if plate_type_votes
+                else best_state.plate_type
+            )
+
+            total_votes = sum(member["votes"] for member in members)
+            first_pts_ms = cluster["first_pts_ms"]
+            confidence_score = representative["confidence"]
+            quality = representative["quality"]
+
+            crop_reference = ""
+            if (
+                self.save_crops
+                and best_state.best_crop is not None
+                and best_state.best_crop.size > 0
+            ):
+                crop_path = crops_dir / f"{job.id}_track{best_state.track_id}_{plate_number}.jpg"
+                written = cv2.imwrite(
+                    str(crop_path),
+                    best_state.best_crop,
+                    [cv2.IMWRITE_JPEG_QUALITY, settings.JPEG_QUALITY],
+                )
+                if written:
+                    crop_reference = str(crop_path)
+
+            first_seconds = first_pts_ms / 1000.0
+            records.append(
+                PlateRecord(
+                    id=f"rec-{uuid.uuid4().hex[:12]}",
+                    job_id=job.id,
+                    job_filename=job.filename,
+                    track_id=best_state.track_id,
+                    plate_number=plate_number,
+                    plate_display=format_plate(plate_number),
+                    province=province_name(plate_number),
+                    plate_type=plate_type,
+                    vehicle_type=vehicle_type,
+                    confidence_score=confidence_score,
+                    quality_score=quality,
+                    crop_image_url=crop_reference,
+                    pts_ms=first_pts_ms,
+                    video_time_str=format_seconds(first_seconds),
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    video_url=str(video_path),
+                    votes=total_votes,
+                    source=best_state.source,
+                )
+            )
+
+        records.sort(key=lambda record: (record.pts_ms, record.plate_number))
+        return records
+
+    @staticmethod
+    def _write_results(
+        results_json: Path,
+        results_csv: Path,
+        job: VideoJob,
+        records: list[PlateRecord],
+    ) -> None:
+        payload = {
+            "job": {
+                "id": job.id,
+                "filename": job.filename,
+                "stage": job.stage,
+                "total_frames": job.total_frames,
+                "processed_frames": job.processed_frames,
+                "duration_seconds": job.duration_seconds,
+                "current_fps": round(job.current_fps, 2),
+                "detected_plates_count": job.detected_plates_count,
+                "created_at": job.created_at,
+                "completed_at": job.completed_at,
+            },
+            "records": [record.to_dict() for record in records],
+        }
+        results_json.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        fieldnames = [
+            "id",
+            "job_id",
+            "job_filename",
+            "track_id",
+            "plate_number",
+            "plate_display",
+            "province",
+            "plate_type",
+            "vehicle_type",
+            "confidence_score",
+            "quality_score",
+            "pts_ms",
+            "video_time_str",
+            "votes",
+            "source",
+            "crop_image_url",
+        ]
+        with results_csv.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for record in records:
+                row = record.to_dict()
+                writer.writerow({key: row.get(key, "") for key in fieldnames})

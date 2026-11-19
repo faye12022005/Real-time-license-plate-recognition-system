@@ -13,6 +13,10 @@ import {
   Cpu,
   ChevronRight,
   AlertTriangle,
+  Car,
+  Building2,
+  Brain,
+  SlidersHorizontal,
 } from "lucide-react";
 import { apiClient } from "@/lib/api";
 
@@ -30,16 +34,22 @@ const NAV_ITEMS = [
     badge: "AI 2.0",
   },
   {
-    name: "Camera giám sát",
+    name: "Quản lý Bãi xe",
+    href: "/parking",
+    icon: Car,
+    badge: "Smart",
+  },
+  {
+    name: "Xe Cư dân",
+    href: "/residents",
+    icon: Building2,
+    badge: null,
+  },
+  {
+    name: "Camera cổng bãi",
     href: "/cameras",
     icon: Camera,
     badge: "Live",
-  },
-  {
-    name: "Biển số",
-    href: "/plates",
-    icon: Database,
-    badge: null,
   },
   {
     name: "Truy vết Biển số",
@@ -47,11 +57,18 @@ const NAV_ITEMS = [
     icon: SearchCode,
     badge: "Forensic",
   },
+  {
+    name: "Cấu hình hệ thống",
+    href: "/settings",
+    icon: SlidersHorizontal,
+    badge: null,
+  },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const [engineStatus, setEngineStatus] = useState<"online" | "offline">("online");
+  const [buildingName, setBuildingName] = useState("Chung cư Sunrise City - Tháp A");
 
   useEffect(() => {
     let cancelled = false;
@@ -65,6 +82,15 @@ export function Sidebar() {
       .catch(() => {
         if (!cancelled) setEngineStatus("offline");
       });
+
+    // Hiển thị tên tòa nhà theo cấu hình hệ thống
+    apiClient
+      .get<{ building?: { name?: string } }>("/settings")
+      .then((res) => {
+        const name = res.data?.building?.name?.trim();
+        if (!cancelled && name) setBuildingName(name);
+      })
+      .catch(() => {});
 
     const handleApiError = () => setEngineStatus("offline");
     window.addEventListener("alpr_api_error", handleApiError);
@@ -93,7 +119,9 @@ export function Sidebar() {
                   2.0
                 </span>
               </div>
-              <p className="text-[11px] text-content-muted font-medium">Bento AI Intelligence</p>
+              <p className="max-w-[172px] truncate text-[11px] text-content-muted font-medium" title={buildingName}>
+                {buildingName}
+              </p>
             </div>
           </Link>
         </div>

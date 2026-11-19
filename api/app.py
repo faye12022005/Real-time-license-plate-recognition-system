@@ -7,13 +7,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config.settings import CAPTURES_DIR, PARKING_DIR, SAMPLES_DIR
+from config import settings
+from config.settings import CAPTURES_DIR, PARKING_DIR, OUTPUT_DIR
 from src.database.connection import init_db
 from api.realtime import realtime_manager
 from api.routes.analytics import router as analytics_router
+from api.routes.camera import router as camera_router
 from api.routes.parking import router as parking_router
 from api.routes.plates import router as plates_router
-from api.routes.training import router as training_router
+from api.routes.settings import router as settings_router
 from api.routes.videos import router as videos_router
 
 TAGS_METADATA = [
@@ -49,6 +51,10 @@ TAGS_METADATA = [
         "description": "🧠 **Huấn luyện mô hình AI**: Huấn luyện YOLOv8/v11 nhận diện biển số xe, giám sát tiến trình và đo lường FPS thời gian thực.",
     },
     {
+        "name": "Settings",
+        "description": "⚙️ **Cấu hình hệ thống**: Bảng giá bãi xe, ngưỡng AI/barie, danh sách đen, lưu trữ và sao lưu database.",
+    },
+    {
         "name": "Health",
         "description": "🩺 **Kiểm tra trạng thái**: Kiểm tra kết nối máy chủ API.",
     },
@@ -76,19 +82,40 @@ Hệ thống tích hợp **Nhận diện biển số xe tự động (ALPR)** & 
 """
 
 
+async def _auto_cleanup_loop() -> None:
+    """Run retention cleanup every 6 hours when auto-cleanup is enabled."""
+    from src.utils.settings_store import cleanup_storage, load_settings
+
+    while True:
+        try:
+            settings = load_settings()
+            if settings.get("storage", {}).get("auto_cleanup_enabled"):
+                await asyncio.to_thread(cleanup_storage, settings)
+        except Exception as exc:
+            print(f"[STORAGE] Auto-cleanup warning: {exc}")
+        await asyncio.sleep(6 * 60 * 60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifespan handler."""
     realtime_manager.set_loop(asyncio.get_running_loop())
+    settings.ensure_directories()
     init_db()
-    CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
-    SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
-    PARKING_DIR.mkdir(parents=True, exist_ok=True)
-    yield
+    cleanup_task = asyncio.create_task(_auto_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    settings.ensure_directories()
     app = FastAPI(
         title="SMART ALPR 2.0 - Bãi Xe Chung Cư & Nhận Diện Biển Số",
         description=SWAGGER_DESCRIPTION,
@@ -116,23 +143,23 @@ def create_app() -> FastAPI:
     )
 
     # Mount static assets for serving crop images, video files, and camera parking snapshots
+    app.mount("/media", StaticFiles(directory=str(OUTPUT_DIR)), name="media")
     app.mount("/static/captures", StaticFiles(directory=str(CAPTURES_DIR)), name="captures")
-    app.mount("/static/videos", StaticFiles(directory=str(SAMPLES_DIR)), name="videos")
     app.mount("/static/parking", StaticFiles(directory=str(PARKING_DIR)), name="parking")
 
-    # Register routers with /api/v1 prefix
+    # Register routers
+    app.include_router(camera_router)
+    app.include_router(videos_router)
     app.include_router(parking_router, prefix="/api/v1")
-    app.include_router(videos_router, prefix="/api/v1")
     app.include_router(plates_router, prefix="/api/v1")
     app.include_router(analytics_router, prefix="/api/v1")
-    app.include_router(training_router, prefix="/api/v1")
+    app.include_router(settings_router, prefix="/api/v1")
 
-    # Also map parking/videos/plates/analytics/training to root so clients without /api/v1 prefix still work seamlessly
+    # Also map parking/plates/analytics/settings to root so clients without /api/v1 prefix still work seamlessly
     app.include_router(parking_router, include_in_schema=False)
-    app.include_router(videos_router, include_in_schema=False)
     app.include_router(plates_router, include_in_schema=False)
     app.include_router(analytics_router, include_in_schema=False)
-    app.include_router(training_router, include_in_schema=False)
+    app.include_router(settings_router, include_in_schema=False)
 
     @app.websocket("/ws")
     @app.websocket("/api/v1/ws")

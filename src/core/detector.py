@@ -1,158 +1,182 @@
-"""License plate detector module based on YOLO (Ultralytics).
+"""License plate and vehicle detection using Ultralytics YOLO models."""
 
-Detects 1-line and 2-line license plates on vehicle images/video streams,
-extracts bounding boxes, and crops Regions of Interest (ROI) for OCR.
-"""
+from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
-import cv2  # type: ignore
-import numpy as np  # type: ignore
+from typing import Iterable, Optional, Sequence
 
-from config.settings import (
-    CLASS_NAMES,
-    DETECTOR_CONF_THRESHOLD,
-    DETECTOR_DEVICE,
-    DETECTOR_IOU_THRESHOLD,
-    DETECTOR_MODEL_PATH,
-    PLATE_CROP_PADDING,
-)
-from src.utils.image_processing import crop_plate_roi
+import numpy as np
+
+from config.settings import VEHICLE_TYPE_MAP
+from src.models import Detection
+from src.utils.logger import get_logger
+
+LOGGER = get_logger(__name__)
 
 
-@dataclass
-class PlateDetection:
-    """Represents a single detected license plate."""
-
-    bbox: Tuple[int, int, int, int]  # (x1, y1, x2, y2)
-    confidence: float
-    class_id: int
-    class_name: str
-    cropped_roi: np.ndarray
-
-
-class PlateDetector:
-    """YOLO-based license plate detector."""
+class YoloDetector:
+    """Thin wrapper around an Ultralytics YOLO detection model."""
 
     def __init__(
         self,
-        model_path: Optional[Path] = None,
-        conf_thresh: float = DETECTOR_CONF_THRESHOLD,
-        iou_thresh: float = DETECTOR_IOU_THRESHOLD,
-        device: str = DETECTOR_DEVICE,
+        model_path: str | Path,
+        confidence: float = 0.25,
+        iou: float = 0.5,
+        imgsz: int = 640,
+        device: Optional[str] = None,
+        **kwargs,
     ) -> None:
-        self.model_path = Path(model_path or DETECTOR_MODEL_PATH)
-        self.conf_thresh = conf_thresh
-        self.iou_thresh = iou_thresh
-        self.device = device
-        self.model = None
-
-        self._load_model()
-
-    def _load_model(self) -> None:
-        """Load YOLO model weights if available."""
-        if not self.model_path.is_file():
-            print(
-                f"[PlateDetector] [WARN] Weight file not found at '{self.model_path}'. "
-                "Detector will run in stub/pass-through mode until weights are placed."
+        if "conf_thresh" in kwargs:
+            confidence = kwargs["conf_thresh"]
+        if "iou_thresh" in kwargs:
+            iou = kwargs["iou_thresh"]
+        self.model_path = Path(model_path)
+        if not self.model_path.exists():
+            raise FileNotFoundError(
+                f"Model not found: {self.model_path}. "
+                "Copy the trained .pt file into data/models/ or pass --models-dir."
             )
-            return
 
         try:
-            import importlib
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise ImportError(
+                "ultralytics is required to run detection. Install dependencies with "
+                "'pip install -r requirements.txt'."
+            ) from exc
 
-            ultralytics = importlib.import_module("ultralytics")  # type: ignore
-            YOLO = getattr(ultralytics, "YOLO")
+        self.confidence = float(confidence)
+        self.iou = float(iou)
+        self.imgsz = int(imgsz)
+        self.device = device
+        self.model = YOLO(str(self.model_path))
+        self.names = self._resolve_names()
 
-            self.model = YOLO(str(self.model_path))
-            print(f"[PlateDetector] [INFO] Loaded YOLO plate detector from '{self.model_path}'.")
-        except (ImportError, ModuleNotFoundError):
-            print("[PlateDetector] [ERROR] 'ultralytics' package not installed. Run 'pip install ultralytics'.")
-        except Exception as e:
-            print(f"[PlateDetector] [ERROR] Failed to load YOLO model: {e}")
+    def _resolve_names(self) -> dict[int, str]:
+        names = getattr(self.model, "names", {}) or {}
+        if isinstance(names, list):
+            return {index: str(name) for index, name in enumerate(names)}
+        return {int(index): str(name) for index, name in names.items()}
 
-    def is_ready(self) -> bool:
-        """Return True if model is loaded and ready for inference."""
-        return self.model is not None
-
-    def detect(self, frame: np.ndarray) -> List[PlateDetection]:
-        """Detect license plates in an image frame.
-
-        Args:
-            frame: Input image (BGR format).
-
-        Returns:
-            List of PlateDetection objects with bounding boxes and cropped ROIs.
-        """
-        if frame is None or frame.size == 0:
-            return []
-
-        if not self.is_ready():
+    def predict(
+        self,
+        image: np.ndarray,
+        confidence: Optional[float] = None,
+        classes: Optional[Sequence[int]] = None,
+    ) -> list[Detection]:
+        """Run inference on a BGR image."""
+        if image is None or image.size == 0:
             return []
 
         results = self.model.predict(
-            source=frame,
-            conf=self.conf_thresh,
-            iou=self.iou_thresh,
+            source=image,
+            conf=self.confidence if confidence is None else float(confidence),
+            iou=self.iou,
+            imgsz=self.imgsz,
             device=self.device,
+            classes=list(classes) if classes is not None else None,
             verbose=False,
         )
-
-        detections: List[PlateDetection] = []
         if not results:
-            return detections
+            return []
 
-        r = results[0]
-        boxes = r.boxes
+        result = results[0]
+        boxes = getattr(result, "boxes", None)
         if boxes is None or len(boxes) == 0:
-            return detections
+            return []
 
-        for box in boxes:
-            coords = box.xyxy[0].cpu().numpy()
-            x1, y1, x2, y2 = [int(v) for v in coords]
-            conf = float(box.conf[0].cpu().numpy())
-            cls_id = int(box.cls[0].cpu().numpy())
-            cls_name = CLASS_NAMES.get(cls_id, f"plate_{cls_id}")
+        xyxy = boxes.xyxy.cpu().numpy()
+        confidences = boxes.conf.cpu().numpy()
+        class_ids = boxes.cls.cpu().numpy().astype(int)
 
-            roi = crop_plate_roi(frame, (x1, y1, x2, y2), padding=PLATE_CROP_PADDING)
-
+        detections: list[Detection] = []
+        for (x1, y1, x2, y2), confidence_value, class_id in zip(xyxy, confidences, class_ids):
+            class_name = self.names.get(int(class_id), str(class_id))
             detections.append(
-                PlateDetection(
-                    bbox=(x1, y1, x2, y2),
-                    confidence=conf,
-                    class_id=cls_id,
-                    class_name=cls_name,
-                    cropped_roi=roi,
+                Detection(
+                    x1=int(round(x1)),
+                    y1=int(round(y1)),
+                    x2=int(round(x2)),
+                    y2=int(round(y2)),
+                    confidence=float(confidence_value),
+                    class_id=int(class_id),
+                    class_name=class_name,
                 )
             )
-
         return detections
 
-    def draw_detections(
+
+class PlateDetector(YoloDetector):
+    """Detector trained on the single `license_plate` class."""
+
+    def __init__(
         self,
-        frame: np.ndarray,
-        detections: List[PlateDetection],
-        draw_labels: bool = True,
-    ) -> np.ndarray:
-        """Draw bounding boxes and class labels onto frame for debugging/visualization."""
-        annotated = frame.copy()
-        for det in detections:
-            x1, y1, x2, y2 = det.bbox
-            color = (0, 255, 0) if det.class_id == 0 else (0, 165, 255)  # Green for 1-line, Orange for 2-line
+        model_path: Optional[str | Path] = None,
+        **kwargs,
+    ) -> None:
+        from config import settings
+        path = model_path or settings.PLATE_MODEL_PATH
+        super().__init__(model_path=path, **kwargs)
 
-            # Draw rectangle
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
 
-            if draw_labels:
-                label = f"{det.class_name}: {det.confidence:.2f}"
-                cv2.putText(
-                    annotated,
-                    label,
-                    (x1, max(20, y1 - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
-                    2,
-                )
-        return annotated
+class VehicleDetector(YoloDetector):
+    """Detector trained on vehicle classes (car, motorbike, bus, truck...)."""
+
+
+def map_vehicle_type(class_name: str) -> str:
+    """Map dataset class names to the API contract vehicle types."""
+    return VEHICLE_TYPE_MAP.get((class_name or "").lower(), "car")
+
+
+def _intersection_area(first: Detection, second: Detection) -> int:
+    x1 = max(first.x1, second.x1)
+    y1 = max(first.y1, second.y1)
+    x2 = min(first.x2, second.x2)
+    y2 = min(first.y2, second.y2)
+    if x2 <= x1 or y2 <= y1:
+        return 0
+    return (x2 - x1) * (y2 - y1)
+
+
+def _iou(first: Detection, second: Detection) -> float:
+    intersection = _intersection_area(first, second)
+    if intersection == 0:
+        return 0.0
+    union = first.area + second.area - intersection
+    return intersection / float(union) if union > 0 else 0.0
+
+
+def select_vehicle_for_plate(
+    plate: Detection,
+    vehicles: Iterable[Detection],
+) -> Optional[Detection]:
+    """Pick the vehicle that most likely contains the given plate."""
+    vehicle_list = list(vehicles)
+    if not vehicle_list:
+        return None
+
+    center_x, center_y = plate.center
+    containing = [
+        vehicle
+        for vehicle in vehicle_list
+        if vehicle.x1 <= center_x <= vehicle.x2 and vehicle.y1 <= center_y <= vehicle.y2
+    ]
+    if containing:
+        return min(containing, key=lambda vehicle: vehicle.area)
+
+    best_iou = 0.0
+    best_vehicle: Optional[Detection] = None
+    for vehicle in vehicle_list:
+        value = _iou(plate, vehicle)
+        if value > best_iou:
+            best_iou = value
+            best_vehicle = vehicle
+    if best_vehicle is not None and best_iou >= 0.05:
+        return best_vehicle
+
+    return min(
+        vehicle_list,
+        key=lambda vehicle: (
+            (vehicle.center[0] - center_x) ** 2 + (vehicle.center[1] - center_y) ** 2
+        ),
+    )

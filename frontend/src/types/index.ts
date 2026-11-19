@@ -219,5 +219,180 @@ export interface ParkingDashboardStats {
   total_registered_residents: number;
   total_cameras: number;
   active_cameras: number;
+  overstay_alert_days?: number;
+  overstay_count?: number;
+  overstay_sessions?: ParkingSession[];
   recent_sessions: ParkingSession[];
+}
+
+// =========================================================================
+// HUẤN LUYỆN MÔ HÌNH AI (Model Training & Evaluation)
+// =========================================================================
+
+export interface TrainingState {
+  is_training: boolean;
+  status: "IDLE" | "STARTING" | "TRAINING" | "COMPLETED" | "FAILED";
+  current_epoch: number;
+  total_epochs: number;
+  start_time?: string;
+  last_error?: string;
+}
+
+export interface TrainingStatusResponse {
+  model_available: boolean;
+  model_path: string;
+  model_size_mb: number;
+  training_state: TrainingState;
+  last_training_summary?: Record<string, any>;
+}
+
+export interface TrainingMetrics {
+  mAP50?: number;
+  mAP50_95?: number;
+  precision?: number;
+  recall?: number;
+  fps?: number;
+  device?: string;
+  epochs_trained?: number;
+  evaluation_time?: string;
+  [key: string]: any;
+}
+
+export interface PrepareDatasetResponse {
+  status: string;
+  message: string;
+  is_valid: boolean;
+  statistics?: Record<string, any>;
+}
+
+export interface TrainRequestInput {
+  model?: string;
+  epochs?: number;
+  batch_size?: number;
+  img_size?: number;
+  patience?: number;
+}
+
+// =========================================================================
+// CẤU HÌNH HỆ THỐNG (System Settings)
+// =========================================================================
+
+export interface ParkingTariffSettings {
+  motorcycle_day: number;
+  motorcycle_night: number;
+  car_first_2h: number;
+  car_extra_hour: number;
+  bicycle_day: number;
+  bicycle_night: number;
+  electric_day: number;
+  electric_night: number;
+}
+
+export interface ParkingCapacitySettings {
+  car: number;
+  motorcycle: number;
+}
+
+export interface ParkingSettings {
+  tariff: ParkingTariffSettings;
+  day_start: string;
+  night_start: string;
+  grace_period_minutes: number;
+  max_capacity: ParkingCapacitySettings;
+}
+
+export interface AISettings {
+  auto_open_enabled: boolean;
+  auto_open_min_confidence: number;
+  barrier_open_seconds: number;
+  min_confidence: number;
+  plate_tolerance: number;
+  evidence_mode: "crop" | "full" | "both";
+}
+
+export interface SecuritySettings {
+  blacklist_plates: string[];
+  mismatch_alert: boolean;
+  vehicle_type_mismatch_alert: boolean;
+  overstay_alert_days: number;
+}
+
+export interface StorageSettings {
+  auto_cleanup_enabled: boolean;
+  video_retention_days: number;
+  crop_retention_days: number;
+}
+
+export interface BuildingSettings {
+  name: string;
+  hotline: string;
+  shift_name: string;
+}
+
+export interface SystemSettings {
+  parking: ParkingSettings;
+  ai: AISettings;
+  security: SecuritySettings;
+  storage: StorageSettings;
+  building: BuildingSettings;
+}
+
+export interface StorageFolderUsage {
+  path: string;
+  size_bytes: number;
+  size_mb: number;
+  file_count: number;
+}
+
+export interface StorageDiskUsage {
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+  total_gb: number;
+  used_gb: number;
+  free_gb: number;
+  used_percent: number;
+}
+
+export interface StorageUsage {
+  folders: {
+    captures: StorageFolderUsage;
+    parking_captures: StorageFolderUsage;
+    sample_videos: StorageFolderUsage;
+  };
+  total_size_bytes: number;
+  total_size_mb: number;
+  disk: StorageDiskUsage;
+  settings_file: string;
+}
+
+export interface CleanupResult {
+  status: string;
+  message: string;
+  deleted_files: number;
+  freed_bytes: number;
+  freed_mb: number;
+  video_retention_days: number;
+  crop_retention_days: number;
+  details: Array<{
+    label: string;
+    deleted_files: number;
+    freed_bytes: number;
+  }>;
+}
+
+export interface DatabaseStatus {
+  connected: boolean;
+  engine?: string;
+  host?: string;
+  port?: number;
+  database?: string;
+  database_path?: string;
+  user?: string;
+  server_version?: string;
+  latency_ms?: number;
+  tables?: Record<string, number>;
+  total_records?: number;
+  message?: string;
+  error?: string;
 }

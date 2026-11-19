@@ -10,6 +10,14 @@ import {
   ResidentVehicle,
   ParkingSession,
   ParkingDashboardStats,
+  TrainingStatusResponse,
+  TrainingMetrics,
+  PrepareDatasetResponse,
+  TrainRequestInput,
+  SystemSettings,
+  StorageUsage,
+  CleanupResult,
+  DatabaseStatus,
 } from "@/types";
 
 export const API_BASE_URL =
@@ -196,6 +204,29 @@ export const alprApi = {
     }
   },
 
+  // 4.1 Xóa một tác vụ video và toàn bộ dữ liệu biển số / tệp liên quan
+  deleteJob: async (jobId: string): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const res = await apiClient.delete<{ status: string; deleted: boolean }>(`/videos/jobs/${jobId}`);
+      return { success: res.data?.deleted ?? true };
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi xóa tác vụ video");
+    }
+  },
+
+  // 4.2 Xóa hàng loạt tác vụ video
+  deleteJobs: async (jobIds: string[]): Promise<{ deleted_count: number; requested_count: number }> => {
+    try {
+      const res = await apiClient.post<{ deleted_count: number; requested_count: number }>(
+        "/videos/jobs/delete",
+        { job_ids: jobIds }
+      );
+      return res.data;
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi xóa hàng loạt video");
+    }
+  },
+
   // 5. Lấy danh sách biển số xe đã lưu trong Database
   getPlates: async (params?: {
     q?: string;
@@ -207,6 +238,39 @@ export const alprApi = {
       return sanitizeArray<PlateRecord>(res.data);
     } catch (err) {
       return failOrEmpty<PlateRecord[]>(err, []);
+    }
+  },
+
+  // 5.1 Xóa một bản ghi biển số xe theo ID
+  deletePlate: async (plateId: string): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const res = await apiClient.delete<{ status: string; deleted: boolean }>(`/plates/records/${plateId}`);
+      return { success: res.data?.deleted ?? true };
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi xóa biển số xe");
+    }
+  },
+
+  // 5.2 Xóa hàng loạt bản ghi biển số xe theo danh sách ID
+  deletePlates: async (plateIds: string[]): Promise<{ deleted_count: number; requested_count: number }> => {
+    try {
+      const res = await apiClient.post<{ deleted_count: number; requested_count: number }>(
+        "/plates/records/delete",
+        { plate_ids: plateIds }
+      );
+      return res.data;
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi xóa hàng loạt biển số xe");
+    }
+  },
+
+  // 5.3 Bắn thử nghiệm sự kiện nhận diện biển số thời gian thực (Live simulation & animation test)
+  simulatePlate: async (): Promise<{ status: string; plate: PlateRecord }> => {
+    try {
+      const res = await apiClient.post<{ status: string; plate: PlateRecord }>("/plates/simulate");
+      return res.data;
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi kích hoạt nhận diện thử nghiệm");
     }
   },
 
@@ -335,6 +399,105 @@ export const alprApi = {
       return sanitizeArray<ResidentVehicle>(res.data);
     } catch (err) {
       return failOrEmpty<ResidentVehicle[]>(err, []);
+    }
+  },
+
+  // 19. Đăng ký mới hoặc cập nhật xe cư dân
+  registerResident: async (payload: Partial<ResidentVehicle>): Promise<ResidentVehicle> => {
+    const res = await apiClient.post<ResidentVehicle>("/parking/residents", payload);
+    return res.data;
+  },
+
+  // 20. Xóa xe cư dân khỏi hệ thống
+  deleteResident: async (residentId: string): Promise<{ status: string; message: string }> => {
+    const res = await apiClient.delete<{ status: string; message: string }>(
+      `/parking/residents/${encodeURIComponent(residentId)}`
+    );
+    return res.data;
+  },
+
+  // 21. Lấy trạng thái mô hình AI và tiến trình huấn luyện
+  getTrainingStatus: async (): Promise<TrainingStatusResponse> => {
+    const res = await apiClient.get<TrainingStatusResponse>("/training/status");
+    return res.data;
+  },
+
+  // 22. Khởi chạy huấn luyện mô hình YOLO phát hiện biển số xe
+  startTraining: async (payload: TrainRequestInput): Promise<{ status: string; message: string; config: any }> => {
+    const res = await apiClient.post("/training/start", payload);
+    return res.data;
+  },
+
+  // 23. Chuẩn bị dataset Kaggle sang YOLO format
+  prepareDataset: async (valRatio: number = 0.2): Promise<PrepareDatasetResponse> => {
+    const res = await apiClient.post<PrepareDatasetResponse>("/training/prepare-dataset", null, {
+      params: { val_ratio: valRatio },
+    });
+    return res.data;
+  },
+
+  // 24. Lấy chỉ số đánh giá mô hình (mAP50, Precision, Recall, FPS)
+  getTrainingMetrics: async (): Promise<TrainingMetrics | undefined> => {
+    try {
+      const res = await apiClient.get<TrainingMetrics>("/training/metrics");
+      return res.data;
+    } catch (err) {
+      return undefined;
+    }
+  },
+
+  // 25. Lấy cấu hình hệ thống (bãi xe, AI, an ninh, lưu trữ, tòa nhà)
+  getSettings: async (): Promise<SystemSettings> => {
+    const res = await apiClient.get<SystemSettings>("/settings");
+    return res.data;
+  },
+
+  // 26. Lưu cấu hình hệ thống
+  updateSettings: async (settings: SystemSettings): Promise<SystemSettings> => {
+    const res = await apiClient.put<SystemSettings>("/settings", settings);
+    return res.data;
+  },
+
+  // 27. Lấy dung lượng các thư mục media và ổ đĩa
+  getStorageUsage: async (): Promise<StorageUsage> => {
+    const res = await apiClient.get<StorageUsage>("/settings/storage");
+    return res.data;
+  },
+
+  // 28. Dọn dẹp file cũ theo thời hạn lưu trữ
+  cleanupStorage: async (settings?: SystemSettings): Promise<CleanupResult> => {
+    const res = await apiClient.post<CleanupResult>("/settings/cleanup", settings ?? null);
+    return res.data;
+  },
+
+  // 29. Kiểm tra trạng thái database
+  getDatabaseStatus: async (): Promise<DatabaseStatus> => {
+    const res = await apiClient.get<DatabaseStatus>("/settings/database/status");
+    return res.data;
+  },
+
+  // 30. Tải file backup .sql của database
+  downloadDatabaseBackup: async (): Promise<Blob> => {
+    try {
+      const res = await apiClient.get("/settings/database/backup", {
+        responseType: "blob",
+        timeout: 120000,
+      });
+      return res.data as Blob;
+    } catch (err) {
+      // Lỗi từ backend khi responseType=blob trả về Blob JSON, cần đọc để lấy detail.
+      const error = err as AxiosError;
+      let message = error.message || "Sao lưu database thất bại.";
+      const data = error.response?.data as unknown;
+      if (data instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await data.text());
+          if (parsed?.detail) message = String(parsed.detail);
+        } catch {
+          // Giữ nguyên thông báo gốc nếu không đọc được blob.
+        }
+      }
+      throw new Error(message);
     }
   },
 };

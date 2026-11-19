@@ -22,6 +22,12 @@ out/
 # Data storage (keep .gitkeep)
 data/captures/*
 !data/captures/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
+data/output/*
+!data/output/.gitkeep
+data/parking/*
+!data/parking/.gitkeep
 data/models/*
 !data/models/.gitkeep
 data/sample_videos/*
@@ -29,6 +35,8 @@ data/sample_videos/*
 data/datasets/*
 !data/datasets/.gitkeep
 !data/datasets/*.yaml
+data/system_settings.json
+data/backups/
 
 # IDEs & System files
 .env
