@@ -21,7 +21,12 @@ export function NetworkStatusBanner() {
     };
 
     window.addEventListener("alpr_api_error", handleApiError);
-    return () => window.removeEventListener("alpr_api_error", handleApiError);
+    const handleConnected = () => setErrorInfo((previous) => previous?.isNetworkError ? null : previous);
+    window.addEventListener("alpr_api_connected", handleConnected);
+    return () => {
+      window.removeEventListener("alpr_api_error", handleApiError);
+      window.removeEventListener("alpr_api_connected", handleConnected);
+    };
   }, []);
 
   if (!errorInfo) return null;

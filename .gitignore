@@ -16,6 +16,7 @@ dist/
 # Frontend & Node
 node_modules/
 .next/
+.next-build/
 out/
 .env*.local
 

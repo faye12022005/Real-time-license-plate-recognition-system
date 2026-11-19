@@ -143,9 +143,11 @@ def create_app() -> FastAPI:
     )
 
     # Mount static assets for serving crop images, video files, and camera parking snapshots
-    app.mount("/media", StaticFiles(directory=str(OUTPUT_DIR)), name="media")
-    app.mount("/static/captures", StaticFiles(directory=str(CAPTURES_DIR)), name="captures")
-    app.mount("/static/parking", StaticFiles(directory=str(PARKING_DIR)), name="parking")
+    app.mount("/media", StaticFiles(directory=str(settings.OUTPUT_DIR)), name="media")
+    app.mount("/static/captures", StaticFiles(directory=str(settings.CAPTURES_DIR)), name="captures")
+    app.mount("/static/parking", StaticFiles(directory=str(settings.PARKING_DIR)), name="parking")
+    app.mount("/static/uploads", StaticFiles(directory=str(settings.UPLOAD_DIR)), name="uploads")
+    app.mount("/static/videos", StaticFiles(directory=str(settings.SAMPLES_DIR)), name="videos")
 
     # Register routers
     app.include_router(camera_router)

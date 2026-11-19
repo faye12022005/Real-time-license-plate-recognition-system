@@ -294,6 +294,21 @@ def get_video_job(job_id: str) -> Optional[dict[str, Any]]:
             return dict(row) if row else None
 
 
+def list_video_jobs(limit: int = 100) -> list[dict[str, Any]]:
+    with connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM `jobs` ORDER BY `created_at` DESC LIMIT %s", (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def delete_video_job(job_id: str) -> bool:
+    with connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM `plate_records` WHERE `job_id` = %s", (job_id,))
+            cursor.execute("DELETE FROM `jobs` WHERE `id` = %s", (job_id,))
+            return cursor.rowcount > 0
+
+
 def get_kpis() -> dict[str, Any]:
     return default_repo.kpis()
 
@@ -380,10 +395,18 @@ def delete_plate_record(record_id: str) -> bool:
 # Parking Management Functions (MySQL)
 # ==============================================================================
 
-def list_cameras() -> list[dict[str, Any]]:
+def list_cameras(camera_type: Optional[str] = None, is_active: Optional[int] = None) -> list[dict[str, Any]]:
+    clauses, params = [], []
+    if camera_type:
+        clauses.append("`camera_type` = %s")
+        params.append(camera_type)
+    if is_active is not None:
+        clauses.append("`is_active` = %s")
+        params.append(is_active)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM `cameras` ORDER BY `created_at` DESC")
+            cursor.execute(f"SELECT * FROM `cameras` {where} ORDER BY `created_at` DESC", params)
             return [dict(r) for r in cursor.fetchall()]
 
 
@@ -396,6 +419,12 @@ def get_camera(camera_id: str) -> Optional[dict[str, Any]]:
 
 
 def upsert_camera(camera_data: dict[str, Any]) -> dict[str, Any]:
+    camera_data = dict(camera_data)
+    now = datetime.now(timezone.utc).isoformat()
+    camera_data["id"] = camera_data.get("id") or f"CAM-{uuid.uuid4().hex[:12]}"
+    existing = get_camera(camera_data["id"])
+    camera_data["created_at"] = (existing or {}).get("created_at") or now
+    camera_data["updated_at"] = now
     fields = [
         "id", "name", "camera_type", "rtsp_url", "location", "resolution",
         "fps_limit", "is_active", "last_heartbeat", "created_at", "updated_at"
@@ -428,9 +457,19 @@ def delete_camera(camera_id: str) -> bool:
             return cursor.rowcount > 0
 
 
-def list_residents(apartment_query: Optional[str] = None, plate_query: Optional[str] = None) -> list[dict[str, Any]]:
+def list_residents(
+    apartment_query: Optional[str] = None, plate_query: Optional[str] = None,
+    *, q: Optional[str] = None, apartment: Optional[str] = None, status: Optional[str] = None,
+) -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
+    apartment_query = apartment or apartment_query
+    if q:
+        clauses.append("(`plate_number` LIKE %s OR `owner_name` LIKE %s OR `apartment_number` LIKE %s)")
+        params.extend([f"%{canonicalize_plate(q)}%", f"%{q}%", f"%{q}%"])
+    if status and status != "ALL":
+        clauses.append("`status` = %s")
+        params.append(status)
     if apartment_query:
         clauses.append("`apartment_number` LIKE %s")
         params.append(f"%{apartment_query}%")
@@ -445,6 +484,15 @@ def list_residents(apartment_query: Optional[str] = None, plate_query: Optional[
 
 
 def upsert_resident_vehicle(data: dict[str, Any]) -> dict[str, Any]:
+    data = dict(data)
+    data["plate_number"] = canonicalize_plate(data["plate_number"])
+    data["plate_display"] = format_plate(data["plate_number"])
+    existing = get_resident_by_plate(data["plate_number"])
+    now = datetime.now(timezone.utc).isoformat()
+    data["id"] = (existing or {}).get("id") or data.get("id") or f"RES-{uuid.uuid4().hex[:12]}"
+    data["created_at"] = (existing or {}).get("created_at") or now
+    data["updated_at"] = now
+    data["registered_at"] = data.get("registered_at") or now[:10]
     fields = [
         "id", "plate_number", "plate_display", "owner_name", "apartment_number",
         "phone_number", "vehicle_type", "rfid_card_id", "monthly_fee",
@@ -479,7 +527,10 @@ def delete_resident_vehicle(resident_id: str) -> bool:
             return cursor.rowcount > 0
 
 
-def list_parking_sessions(status: Optional[str] = None, plate: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+def list_parking_sessions(
+    status: Optional[str] = None, plate: Optional[str] = None, limit: int = 100,
+    ticket_type: Optional[str] = None, apartment: Optional[str] = None,
+) -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
     if status and status != "ALL":
@@ -487,7 +538,13 @@ def list_parking_sessions(status: Optional[str] = None, plate: Optional[str] = N
         params.append(status)
     if plate:
         clauses.append("(`plate_number` LIKE %s OR `plate_display` LIKE %s)")
-        params.extend([f"%{plate}%", f"%{plate}%"])
+        params.extend([f"%{canonicalize_plate(plate)}%", f"%{plate}%"])
+    if ticket_type and ticket_type != "ALL":
+        clauses.append("`ticket_type` = %s")
+        params.append(ticket_type)
+    if apartment:
+        clauses.append("`apartment_number` LIKE %s")
+        params.append(f"%{apartment}%")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(int(limit))
     with connection() as conn:
@@ -538,6 +595,11 @@ def upsert_parking_session(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_parking_dashboard_stats() -> dict[str, Any]:
+    from datetime import timedelta
+    from src.utils.settings_store import load_settings
+
+    overstay_days = max(1, int(load_settings()["security"]["overstay_alert_days"]))
+    cutoff = (datetime.now() - timedelta(days=overstay_days)).strftime("%Y-%m-%d %H:%M:%S")
     with connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -546,11 +608,31 @@ def get_parking_dashboard_stats() -> dict[str, Any]:
                     (SELECT COUNT(*) FROM `parking_sessions` WHERE `status` = 'PARKED') as total_parked,
                     (SELECT COUNT(*) FROM `parking_sessions` WHERE DATE(`entry_time`) = CURRENT_DATE) as entries_today,
                     (SELECT COUNT(*) FROM `parking_sessions` WHERE `status` = 'COMPLETED' AND DATE(`exit_time`) = CURRENT_DATE) as exits_today,
-                    (SELECT COUNT(*) FROM `resident_vehicles` WHERE `status` = 'ACTIVE') as total_residents
+                    (SELECT COUNT(*) FROM `resident_vehicles`) as total_residents,
+                    (SELECT COUNT(*) FROM `parking_sessions` WHERE `status` = 'PARKED' AND `ticket_type` = 'RESIDENT') as resident_parked,
+                    (SELECT COUNT(*) FROM `parking_sessions` WHERE `status` = 'PARKED' AND `ticket_type` != 'RESIDENT') as guest_parked,
+                    (SELECT SUM(`parking_fee`) FROM `parking_sessions` WHERE DATE(`exit_time`) = CURRENT_DATE) as revenue_today_vnd,
+                    (SELECT COUNT(*) FROM `cameras`) as total_cameras,
+                    (SELECT COUNT(*) FROM `cameras` WHERE `is_active` = 1) as active_cameras
                 """
             )
             row = cursor.fetchone() or {}
+            cursor.execute("SELECT * FROM `parking_sessions` ORDER BY `entry_time` DESC LIMIT 10")
+            recent = [dict(r) for r in cursor.fetchall()]
+            cursor.execute("SELECT * FROM `parking_sessions` WHERE `status` = 'PARKED' AND `entry_time` <= %s ORDER BY `entry_time`", (cutoff,))
+            overstays = [dict(r) for r in cursor.fetchall()]
     return {
+        "currently_parked": int(row.get("total_parked") or 0),
+        "resident_parked": int(row.get("resident_parked") or 0),
+        "guest_parked": int(row.get("guest_parked") or 0),
+        "revenue_today_vnd": int(row.get("revenue_today_vnd") or 0),
+        "total_registered_residents": int(row.get("total_residents") or 0),
+        "total_cameras": int(row.get("total_cameras") or 0),
+        "active_cameras": int(row.get("active_cameras") or 0),
+        "recent_sessions": recent,
+        "overstay_alert_days": overstay_days,
+        "overstay_count": len(overstays),
+        "overstay_sessions": overstays,
         "total_parked": int(row.get("total_parked") or 0),
         "entries_today": int(row.get("entries_today") or 0),
         "exits_today": int(row.get("exits_today") or 0),
@@ -689,6 +771,8 @@ def check_in_vehicle(
 
     upsert_parking_session(session_data)
     notify_realtime("parking_updated", {"action": "check_in", "session": session_data})
+    notify_realtime("parking_check_in", session_data)
+    notify_realtime("kpis_updated")
     return session_data
 
 
@@ -700,6 +784,8 @@ def check_out_vehicle(
     exit_gate_name: str = "Cổng Ra Làn 1",
     session_id: Optional[str] = None,
     notes: Optional[str] = None,
+    confidence: float = 0.95,
+    exit_vehicle_type: Optional[str] = None,
 ) -> dict[str, Any]:
     norm = canonicalize_plate(plate_number)
     now_dt = datetime.now()
@@ -709,6 +795,8 @@ def check_out_vehicle(
     session = None
     if session_id:
         session = get_parking_session(session_id)
+        if not session or session.get("status") != "PARKED":
+            raise ValueError("Phiên gửi xe không tồn tại hoặc xe đã ra bãi.")
     if not session:
         sessions = list_parking_sessions(status="PARKED", plate=norm, limit=1)
         if sessions:
@@ -718,6 +806,7 @@ def check_out_vehicle(
         raise ValueError(f"Không tìm thấy xe đang trong bãi với biển số '{norm}'.")
 
     entry_time_str = session["entry_time"]
+    entry_dt = None
     try:
         from datetime import datetime as dt_cls
         entry_dt = dt_cls.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
@@ -730,6 +819,7 @@ def check_out_vehicle(
         vehicle_type=session.get("vehicle_type", "car"),
         ticket_type=session.get("ticket_type", "GUEST"),
         duration_minutes=duration_minutes,
+        entry_time=entry_dt,
     )
 
     is_matched = norm == canonicalize_plate(session["plate_number"])
@@ -750,5 +840,6 @@ def check_out_vehicle(
 
     upsert_parking_session(session)
     notify_realtime("parking_updated", {"action": "check_out", "session": session})
+    notify_realtime("parking_check_out", session)
+    notify_realtime("kpis_updated")
     return session
-

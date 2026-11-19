@@ -62,10 +62,7 @@ def get_database_status():
 
 @router.get("/database/backup")
 def download_database_backup():
-    """Create and download a .sql backup of the active database.
-
-    Supports SQLite and MySQL. SQL Server returns HTTP 501 with a hint to use SSMS.
-    """
+    """Create and download a .sql backup of the active MySQL database."""
     try:
         result = create_database_backup()
     except RuntimeError as exc:

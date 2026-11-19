@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "@/lib/api";
+import { BACKEND_ORIGIN } from "@/lib/endpoints";
 
 /**
  * Backend trả URL media dạng tương đối (`/static/captures/...`).
@@ -12,6 +12,5 @@ export function resolveMediaUrl(url?: string | null): string {
     return url;
   }
 
-  const apiOrigin = API_BASE_URL.replace(/\/api\/v1\/?$/i, "");
-  return `${apiOrigin}${url.startsWith("/") ? "" : "/"}${url}`;
+  return `${BACKEND_ORIGIN}${url.startsWith("/") ? "" : "/"}${url}`;
 }

@@ -505,7 +505,7 @@ export function RealtimeVideoScanner() {
                   </div>
 
                   <div className="flex items-center gap-2 bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-800 text-white font-mono text-[10px]">
-                    <span className="text-blue-400 font-bold">28.5 FPS</span>
+                    <span className="text-blue-400 font-bold">29 FPS</span>
                     <span className="text-slate-400">• ZERO-DROP</span>
                   </div>
                 </div>

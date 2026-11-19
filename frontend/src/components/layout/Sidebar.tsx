@@ -67,21 +67,23 @@ const NAV_ITEMS = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [engineStatus, setEngineStatus] = useState<"online" | "offline">("online");
+  const [engineStatus, setEngineStatus] = useState<"online" | "offline">("offline");
   const [buildingName, setBuildingName] = useState("Chung cư Sunrise City - Tháp A");
 
   useEffect(() => {
     let cancelled = false;
 
     // Kiểm tra tín hiệu thực tế từ Backend FastAPI
-    apiClient
-      .get("/analytics/kpis")
+    const checkHealth = () => apiClient
+      .get("/health")
       .then(() => {
         if (!cancelled) setEngineStatus("online");
       })
       .catch(() => {
         if (!cancelled) setEngineStatus("offline");
       });
+    void checkHealth();
+    const timer = window.setInterval(checkHealth, 15000);
 
     // Hiển thị tên tòa nhà theo cấu hình hệ thống
     apiClient
@@ -92,12 +94,18 @@ export function Sidebar() {
       })
       .catch(() => {});
 
-    const handleApiError = () => setEngineStatus("offline");
+    const handleApiError = (event: Event) => {
+      if ((event as CustomEvent).detail?.isNetworkError) setEngineStatus("offline");
+    };
+    const handleConnected = () => setEngineStatus("online");
     window.addEventListener("alpr_api_error", handleApiError);
+    window.addEventListener("alpr_api_connected", handleConnected);
 
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
       window.removeEventListener("alpr_api_error", handleApiError);
+      window.removeEventListener("alpr_api_connected", handleConnected);
     };
   }, []);
 

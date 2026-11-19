@@ -87,7 +87,7 @@ export function VideoUploadZone({
               overallProgress: progress,
               processedFrames: update.processed_frames ?? q.processedFrames,
               totalFrames: update.total_frames ?? q.totalFrames,
-              currentFps: update.current_fps ?? q.currentFps,
+              currentFps: update.current_fps !== undefined ? Math.round(update.current_fps) : q.currentFps,
               etaSeconds: update.eta_seconds ?? q.etaSeconds,
               detectedPlatesCount: update.detected_plates_count ?? q.detectedPlatesCount,
               processedVideoUrl: update.processed_video_url ?? q.processedVideoUrl,
@@ -129,7 +129,7 @@ export function VideoUploadZone({
                       : Math.round(freshJob.stage_progress_pct ?? freshJob.overall_progress_pct ?? 0),
                     processedFrames: freshJob.processed_frames,
                     totalFrames: freshJob.total_frames,
-                    currentFps: freshJob.current_fps,
+                    currentFps: freshJob.current_fps !== undefined ? Math.round(freshJob.current_fps) : 0,
                     etaSeconds: freshJob.eta_seconds,
                     detectedPlatesCount: freshJob.detected_plates_count,
                     processedVideoUrl: freshJob.processed_video_url,
@@ -489,14 +489,22 @@ export function VideoUploadZone({
               const isError = item.status === "ERROR";
               const isQueued = item.status === "QUEUED";
 
-              // Tính toán phần trăm tiến trình hiển thị cho thanh đơn
-              const currentPercent = isUploading
-                ? item.uploadProgress
-                : isProcessing
-                ? item.overallProgress || 0
-                : isCompleted
-                ? 100
-                : 0;
+              // Tính toán phần trăm tiến trình hiển thị cho thanh đơn (Làm tròn đến hàng đơn vị)
+              const currentPercent = Math.min(
+                100,
+                Math.max(
+                  0,
+                  Math.round(
+                    isUploading
+                      ? item.uploadProgress
+                      : isProcessing
+                      ? item.overallProgress || 0
+                      : isCompleted
+                      ? 100
+                      : 0
+                  )
+                )
+              );
 
               return (
                 <div
@@ -537,7 +545,7 @@ export function VideoUploadZone({
                         <p className="text-[10px] text-content-muted font-mono flex items-center gap-2 mt-0.5">
                           <span>{formatBytes(item.fileSizeBytes)}</span>
                           {item.currentFps ? (
-                            <span className="text-purple-700 font-semibold">• {item.currentFps} FPS</span>
+                            <span className="text-purple-700 font-semibold">• {Math.round(item.currentFps)} FPS</span>
                           ) : null}
                           {isProcessing && item.totalFrames ? (
                             <span>• {item.processedFrames || 0}/{item.totalFrames} frames</span>
@@ -558,13 +566,13 @@ export function VideoUploadZone({
                       )}
                       {isUploading && (
                         <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-300 animate-pulse">
-                          1/2: ĐANG TẢI LÊN ({item.uploadProgress}%)
+                          1/2: ĐANG TẢI LÊN ({Math.round(item.uploadProgress)}%)
                         </span>
                       )}
                       {isProcessing && (
                         <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-700 border border-purple-300 animate-pulse flex items-center gap-1">
                           <Sparkles className="w-3 h-3 text-purple-600 animate-spin" />
-                          2/2: AI ĐANG QUÉT ({item.overallProgress || 0}%)
+                          2/2: AI ĐANG QUÉT ({Math.round(item.overallProgress || 0)}%)
                         </span>
                       )}
                       {isCompleted && (

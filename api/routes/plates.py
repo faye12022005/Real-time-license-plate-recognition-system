@@ -5,12 +5,15 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from api.video_manager import video_manager
+from api.serializers import record_payload, media_url
+from src.utils.plate_validator import normalize_plate
 from src.database.repository import (
     delete_plate,
     delete_plates,
     get_plate,
     get_plate_trace,
     list_plates,
+    notify_realtime,
 )
 
 router = APIRouter(prefix="/plates", tags=["Plates"])
@@ -29,18 +32,27 @@ def get_plate_records(
     job_id: Optional[str] = Query(None, description="Filter by video job ID"),
 ):
     """Retrieve list of recognized license plate records with optional filters."""
-    records = list_plates(q=q, vehicle_type=vehicle_type, job_id=job_id)
-    if not records:
-        records = video_manager.latest_records()
-    return records
+    records = {r["id"]: record_payload(r) for r in list_plates(q=q, vehicle_type=vehicle_type, job_id=job_id)}
+    for record in video_manager.latest_records():
+        if job_id and record.get("job_id") != job_id:
+            continue
+        if vehicle_type and vehicle_type != "all" and record.get("vehicle_type") != vehicle_type:
+            continue
+        if q and normalize_plate(q) not in normalize_plate(record.get("plate_number", "")):
+            continue
+        records.setdefault(record["id"], record)
+    return sorted(records.values(), key=lambda r: str(r.get("timestamp", "")), reverse=True)
 
 
 @router.delete("/records/{plate_id}")
 def delete_plate_record(plate_id: str):
     """Delete a single license plate record by its ID."""
     deleted = delete_plate(plate_id)
-    if not deleted:
+    removed = video_manager.forget_records([plate_id])
+    if not deleted and not removed:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi biển số xe cần xóa")
+    notify_realtime("plate_deleted", {"plate_id": plate_id})
+    notify_realtime("kpis_updated")
     return {"status": "success", "plate_id": plate_id, "deleted": True}
 
 
@@ -49,7 +61,13 @@ def delete_plates_records_bulk(payload: PlateDeleteRequest):
     """Delete multiple license plate records."""
     if not payload.plate_ids:
         return {"deleted_count": 0, "requested_count": 0}
-    deleted_count = delete_plates(payload.plate_ids)
+    present = {p["id"] for p in video_manager.latest_records() if p["id"] in payload.plate_ids}
+    present.update(p for p in payload.plate_ids if get_plate(p))
+    delete_plates(payload.plate_ids)
+    video_manager.forget_records(payload.plate_ids)
+    deleted_count = len(present)
+    notify_realtime("plates_bulk_deleted", {"plate_ids": list(present)})
+    notify_realtime("kpis_updated")
     return {"deleted_count": deleted_count, "requested_count": len(payload.plate_ids)}
 
 
@@ -61,8 +79,7 @@ def delete_plates_records_by_query(
     if not plate_ids:
         return {"deleted_count": 0, "requested_count": 0}
     ids = [i.strip() for i in plate_ids.split(",") if i.strip()]
-    deleted_count = delete_plates(ids)
-    return {"deleted_count": deleted_count, "requested_count": len(ids)}
+    return delete_plates_records_bulk(PlateDeleteRequest(plate_ids=ids))
 
 
 @router.get("/trace")
@@ -73,7 +90,11 @@ def trace_vehicle_plate(
     if not plate or not plate.strip():
         raise HTTPException(status_code=400, detail="Vui lòng cung cấp biển số xe cần truy vết")
 
-    return get_plate_trace(query_plate=plate)
+    results = get_plate_trace(query_plate=plate)
+    for summary in results:
+        summary["records"] = [record_payload(r) for r in summary["records"]]
+        summary["best_crop_image_url"] = media_url(summary.get("best_crop_image_url"))
+    return results
 
 
 @router.post("/simulate")

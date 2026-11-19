@@ -1083,7 +1083,7 @@ export default function SettingsPage() {
                   Sao lưu Database (.sql)
                 </button>
                 <p className="text-[10px] leading-relaxed text-content-muted">
-                  Hỗ trợ SQLite và MySQL. Với SQL Server, dùng SQL Server Management Studio để backup.
+                  Tải bản sao SQL từ database MySQL đang kết nối.
                 </p>
               </div>
             </section>

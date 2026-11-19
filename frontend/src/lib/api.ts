@@ -20,8 +20,8 @@ import {
   DatabaseStatus,
 } from "@/types";
 
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+import { API_BASE_URL } from "@/lib/endpoints";
+export { API_BASE_URL } from "@/lib/endpoints";
 
 /** Không gọi được Backend: chưa chạy / CORS / timeout / HTTP 5xx. */
 export class BackendUnreachableError extends Error {
@@ -48,7 +48,7 @@ function isConnectionFailure(err: unknown): boolean {
 function failOrEmpty<T>(err: unknown, fallback: T): T {
   if (typeof window === "undefined" && isConnectionFailure(err)) {
     throw new BackendUnreachableError(
-      "Không kết nối được Backend FastAPI (http://localhost:8000). Hãy khởi chạy backend rồi thử lại."
+      `Không kết nối được Backend FastAPI (${API_BASE_URL}). Hãy khởi chạy backend rồi thử lại.`
     );
   }
   return fallback;
@@ -75,8 +75,14 @@ apiClient.interceptors.request.use((config) => {
 
 // Interceptor: Bắt và thông báo lỗi mạng, sập server hoặc CORS toàn cục
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("alpr_api_connected"));
+    }
+    return response;
+  },
   (error) => {
+    if (axios.isCancel(error)) return Promise.reject(error);
     if (typeof window !== "undefined") {
       const isNetworkError =
         !error.response ||
@@ -84,12 +90,16 @@ apiClient.interceptors.response.use(
         error.code === "ECONNABORTED" ||
         error.message?.includes("Network Error");
 
+      const detail = error.response?.data?.detail;
+      const message = typeof detail === "string" ? detail
+        : Array.isArray(detail) ? detail.map((item: { msg?: string }) => item.msg).join("; ")
+        : error.message || "Lỗi giao tiếp máy chủ";
       window.dispatchEvent(
         new CustomEvent("alpr_api_error", {
           detail: {
             message: isNetworkError
-              ? "Không thể kết nối đến máy chủ Backend FastAPI (http://localhost:8000). Vui lòng kiểm tra backend đã khởi chạy chưa."
-              : error.response?.data?.detail || error.message || "Lỗi giao tiếp máy chủ",
+              ? `Không thể kết nối đến Backend FastAPI (${API_BASE_URL}). Vui lòng kiểm tra backend đã khởi chạy chưa.`
+              : message,
             status: error.response?.status,
             isNetworkError,
           },
@@ -137,6 +147,10 @@ function sanitizeArray<T>(raw: unknown): T[] {
 }
 
 export const alprApi = {
+  getHealth: async (): Promise<{ status: string }> => {
+    const res = await apiClient.get("/health");
+    return res.data;
+  },
   // 1. Thống kê Dashboard KPI
   getKPIs: async (): Promise<DashboardKPIs> => {
     try {
@@ -167,6 +181,8 @@ export const alprApi = {
       const formData = new FormData();
       formData.append("file", file);
       const res = await apiClient.post<{ job_id: string }>("/videos/upload", formData, {
+        params: { save_db: true },
+        timeout: 0, // Large uploads are cancelled explicitly with AbortSignal.
         headers: { "Content-Type": "multipart/form-data" },
         signal,
         onUploadProgress: (progressEvent) => {
@@ -190,7 +206,7 @@ export const alprApi = {
       } else if (err.code === "ECONNABORTED") {
         throw new Error("Hết thời gian chờ phản hồi từ máy chủ (Timeout)");
       }
-      throw new Error(err.message || "Lỗi kết nối mạng khi tải lên video");
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi kết nối mạng khi tải lên video");
     }
   },
 
@@ -329,7 +345,7 @@ export const alprApi = {
     vehicle_type?: string;
     notes?: string;
   }): Promise<{ status: string; message: string; data: ParkingSession }> => {
-    const res = await apiClient.post("/parking/check-in", payload);
+    const res = await apiClient.post("/parking/check-in", payload, { timeout: 120000 });
     return res.data;
   },
 
@@ -337,6 +353,7 @@ export const alprApi = {
   checkInVehicleWithImage: async (formData: FormData): Promise<{ status: string; message: string; data: ParkingSession }> => {
     const res = await apiClient.post("/parking/check-in/upload", formData, {
       headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120000,
     });
     return res.data;
   },
@@ -348,7 +365,7 @@ export const alprApi = {
     session_id?: string;
     notes?: string;
   }): Promise<{ status: string; message: string; data: ParkingSession }> => {
-    const res = await apiClient.post("/parking/check-out", payload);
+    const res = await apiClient.post("/parking/check-out", payload, { timeout: 120000 });
     return res.data;
   },
 
@@ -356,6 +373,7 @@ export const alprApi = {
   checkOutVehicleWithImage: async (formData: FormData): Promise<{ status: string; message: string; data: ParkingSession }> => {
     const res = await apiClient.post("/parking/check-out/upload", formData, {
       headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120000,
     });
     return res.data;
   },
@@ -387,7 +405,7 @@ export const alprApi = {
   // 17. Kiểm tra tín hiệu kết nối thực tế tới Camera
   testCameraConnection: async (cameraId: string): Promise<CameraConnectionTest> => {
     const res = await apiClient.post<CameraConnectionTest>(
-      `/parking/cameras/${encodeURIComponent(cameraId)}/test`
+      `/parking/cameras/${encodeURIComponent(cameraId)}/test`, null, { timeout: 60000 }
     );
     return res.data;
   },

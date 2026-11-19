@@ -235,9 +235,10 @@ def _sql_literal(value: Any) -> str:
 
 
 def _dump_mysql() -> str:
-    from src.database.connection import get_mysql_raw_connection
+    from src.database.connection import get_connection
+    from pymysql.cursors import Cursor
 
-    raw = get_mysql_raw_connection(create_db_if_missing=False)
+    raw = get_connection()
     if raw is None:
         raise RuntimeError("Không kết nối được MySQL để sao lưu")
 
@@ -250,7 +251,7 @@ def _dump_mysql() -> str:
         "",
     ]
     try:
-        cur = raw.cursor()
+        cur = raw.cursor(Cursor)
         cur.execute("SHOW TABLES")
         tables = [row[0] for row in cur.fetchall()]
         for table in tables:
@@ -288,34 +289,13 @@ def _dump_sqlite() -> str:
 
 
 def create_database_backup() -> Dict[str, Any]:
-    """Create a .sql backup for the active database (SQLite or MySQL)."""
-    from src.database.connection import (
-        MySQLConnectionWrapper,
-        SQLServerConnectionWrapper,
-        get_connection,
-    )
+    """Create a .sql backup using the active MySQL connection."""
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     backup_path = BACKUP_DIR / f"alpr_backup_{timestamp}.sql"
 
-    conn = get_connection()
-    try:
-        is_mysql = isinstance(conn, MySQLConnectionWrapper)
-        is_sqlserver = isinstance(conn, SQLServerConnectionWrapper)
-    finally:
-        conn.close()
-
-    if is_sqlserver:
-        raise RuntimeError(
-            "Sao lưu .sql cho SQL Server chưa được hỗ trợ. "
-            "Hãy dùng SQL Server Management Studio hoặc đổi sang MySQL/SQLite."
-        )
-
-    if is_mysql:
-        content = _dump_mysql()
-    else:
-        content = _dump_sqlite()
+    content = _dump_mysql()
 
     backup_path.write_text(content, encoding="utf-8")
     return {

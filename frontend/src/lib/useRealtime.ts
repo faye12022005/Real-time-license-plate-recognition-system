@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { API_BASE_URL } from "@/lib/api";
+import { websocketUrl } from "@/lib/endpoints";
 
 type RealtimeEventHandler = (data: any) => void;
 
@@ -29,14 +29,7 @@ class RealtimeClient {
   }
 
   public getWsUrl(): string {
-    const customWs = process.env.NEXT_PUBLIC_WS_URL;
-    if (customWs) {
-      return customWs.endsWith("/ws") ? customWs : `${customWs}/ws`;
-    }
-
-    // Tự động suy ra WebSocket URL từ API_BASE_URL
-    const origin = API_BASE_URL.replace(/^http(s?):\/\//i, "ws$1://").replace(/\/api\/v1\/?$/i, "");
-    return `${origin}/ws`;
+    return websocketUrl();
   }
 
   public connect(): void {
@@ -76,8 +69,7 @@ class RealtimeClient {
       };
 
       this.ws.onerror = () => {
-        this.cleanup();
-        this.scheduleReconnect();
+        this.ws?.close(); // onclose owns cleanup and reconnect.
       };
     } catch {
       this.cleanup();
@@ -182,4 +174,3 @@ export function useRealtimeEvent<T = any>(
     return unsubscribe;
   }, [event]);
 }
-

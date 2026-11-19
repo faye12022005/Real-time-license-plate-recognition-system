@@ -5,12 +5,14 @@ from __future__ import annotations
 import queue
 import threading
 import uuid
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from api.serializers import record_payload
+from api.serializers import record_payload, media_url
+from api.realtime import realtime_manager
 from config import settings
 from src.models import PlateRecord, VideoJob
 
@@ -34,7 +36,7 @@ JOB_FIELDS = (
 class VideoUploadOptions:
     """Processing options for an uploaded video."""
 
-    save_db: bool = False
+    save_db: bool = True
     ocr_mode: str = "hybrid"
     stride: int = 1
     min_votes: int = settings.MIN_PLATE_VOTES
@@ -78,15 +80,21 @@ class VideoJobManager:
             "current_fps": 0.0,
             "eta_seconds": 0.0,
             "detected_plates_count": 0,
-            "video_url": self._video_url(job_id),
+            "video_url": media_url(str(path)),
             "error_message": None,
             "created_at": now,
             "completed_at": None,
         }
+        options = options or VideoUploadOptions()
+        if options.save_db:
+            from src.database.repository import insert_video_job
+            insert_video_job(job)
         with self._lock:
             self._jobs[job_id] = job
             self._paths[job_id] = path
-            self._options[job_id] = options or VideoUploadOptions()
+            self._options[job_id] = options
+        realtime_manager.broadcast_sync("video_job_created", dict(job))
+        realtime_manager.broadcast_sync("kpis_updated", {})
         self._queue.put(job_id)
         return dict(job)
 
@@ -126,6 +134,28 @@ class VideoJobManager:
             return None
         return path
 
+    def forget_records(self, plate_ids: list[str]) -> int:
+        ids = set(plate_ids)
+        removed = 0
+        with self._lock:
+            for job_id, records in self._records.items():
+                kept = [r for r in records if r.id not in ids]
+                removed += len(records) - len(kept)
+                self._records[job_id] = kept
+                self._jobs[job_id]["detected_plates_count"] = len(kept)
+        return removed
+
+    def remove_jobs(self, job_ids: list[str]) -> None:
+        """Only terminal jobs can be removed; never race the running worker."""
+        with self._lock:
+            if any(self._jobs[j]["stage"] not in TERMINAL_STAGES for j in job_ids if j in self._jobs):
+                raise ValueError("Video đang xử lý. Vui lòng đợi xử lý hoàn tất trước khi xóa.")
+            for job_id in job_ids:
+                self._jobs.pop(job_id, None)
+                self._paths.pop(job_id, None)
+                self._options.pop(job_id, None)
+                self._records.pop(job_id, None)
+
     def analytics(self) -> dict:
         with self._lock:
             jobs = list(self._jobs.values())
@@ -163,6 +193,8 @@ class VideoJobManager:
                 return
             try:
                 self._process(job_id)
+            except Exception:
+                logging.getLogger(__name__).exception("Could not finish video job %s", job_id)
             finally:
                 self._queue.task_done()
 
@@ -200,21 +232,32 @@ class VideoJobManager:
                 output_dir=settings.OUTPUT_DIR / f"upload_{job_id}",
                 save_annotated=False,
                 display=False,
-                save_db=options.save_db,
+                save_db=False,
                 job_id=job_id,
                 progress_callback=self._on_progress,
                 display_name=display_name,
             )
             with self._lock:
-                job = self._jobs[job_id]
+                job = dict(self._jobs[job_id])
                 records = list(result.records)
                 for record in records:
                     record.job_filename = job["filename"]
-                self._records[job_id] = records
                 for field_name in JOB_FIELDS:
                     job[field_name] = getattr(result.job, field_name)
                 job["stage"] = result.job.stage
-                job["video_url"] = self._video_url(job_id)
+                job["video_url"] = media_url(str(path))
+                snapshot = dict(job)
+            if options.save_db:
+                from src.database.repository import insert_video_job, default_repo
+                insert_video_job(snapshot)
+                default_repo.save_records(records)
+            with self._lock:
+                self._records[job_id] = records
+                self._jobs[job_id] = snapshot
+            for record in records:
+                realtime_manager.broadcast_sync("plate_detected", record_payload(record))
+            realtime_manager.broadcast_sync("video_job_updated", {"job_id": job_id, **snapshot})
+            realtime_manager.broadcast_sync("kpis_updated", {})
         except Exception as exc:  # noqa: BLE001 - surfaced through the job API
             with self._lock:
                 self._update_locked(
@@ -223,6 +266,12 @@ class VideoJobManager:
                     error_message=str(exc),
                     completed_at=datetime.now(timezone.utc).isoformat(),
                 )
+                snapshot = dict(self._jobs[job_id])
+            if options.save_db:
+                from src.database.repository import insert_video_job
+                insert_video_job(snapshot)
+            realtime_manager.broadcast_sync("video_job_updated", {"job_id": job_id, **snapshot})
+            realtime_manager.broadcast_sync("kpis_updated", {})
 
     def _on_progress(self, job: VideoJob) -> None:
         with self._lock:
@@ -233,18 +282,13 @@ class VideoJobManager:
                 if field_name == "stage" and job.stage == "COMPLETED":
                     continue
                 target[field_name] = getattr(job, field_name)
-            target["video_url"] = self._video_url(job.id)
+            snapshot = dict(target)
+        realtime_manager.broadcast_sync("video_job_updated", {"job_id": job.id, **snapshot})
 
     def _update_locked(self, job_id: str, **updates) -> None:
         job = self._jobs.get(job_id)
         if job is None:
             return
         job.update(updates)
-        job["video_url"] = self._video_url(job_id)
-
-    @staticmethod
-    def _video_url(job_id: str) -> str:
-        return f"/api/v1/videos/{job_id}/file"
-
 
 video_manager = VideoJobManager()

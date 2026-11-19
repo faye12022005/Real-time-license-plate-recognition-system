@@ -44,6 +44,10 @@ export default function UploadPage() {
 
   useEffect(() => {
     fetchJobs();
+    const timer = window.setInterval(() => {
+      void alprApi.getJobs().then(setJobs);
+    }, 5000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const handleJobUpdated = (jobId: string, updates: Partial<VideoJob>) => {
@@ -161,7 +165,7 @@ export default function UploadPage() {
           </p>
         </div>
         <VideoUploadZone
-          onJobCreated={(newJob) => setJobs((prev) => [newJob, ...prev])}
+          onJobCreated={(newJob) => setJobs((prev) => [newJob, ...prev.filter((j) => j.id !== newJob.id)])}
           onJobUpdated={handleJobUpdated}
           onOpenVideoModal={(job) => setSelectedJobForVideo(job)}
         />
@@ -297,14 +301,14 @@ export default function UploadPage() {
                             <span>
                               {job.processed_frames}/{job.total_frames} frames
                             </span>
-                            <span>{job.overall_progress_pct}%</span>
+                            <span>{Math.round(job.overall_progress_pct || 0)}%</span>
                           </div>
                           <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
                             <div
                               className={`h-full rounded-full ${
                                 job.stage === "COMPLETED" ? "bg-status-success" : "bg-primary"
                               }`}
-                              style={{ width: `${job.overall_progress_pct}%` }}
+                              style={{ width: `${Math.min(100, Math.max(0, Math.round(job.overall_progress_pct || 0)))}%` }}
                             />
                           </div>
                         </div>
@@ -322,7 +326,7 @@ export default function UploadPage() {
 
                       {/* Tốc độ AI */}
                       <td className="py-3 px-4 text-right font-mono font-semibold text-content-secondary">
-                        {job.current_fps} FPS
+                        {Math.round(job.current_fps || 0)} FPS
                       </td>
 
                       {/* Thao tác (Xem Video, Xem Biển số, Xóa Video) */}

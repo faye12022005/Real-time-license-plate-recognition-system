@@ -27,7 +27,7 @@ from src.database.repository import (
     get_camera,
     notify_realtime,
 )
-from src.utils.image_processing import crop_plate_roi
+from src.utils.image_processing import crop_with_padding
 from src.utils.plate_validator import format_vietnamese_plate, normalize_plate
 from src.utils.settings_store import load_settings
 
@@ -141,30 +141,24 @@ class CameraConnector:
         direction_label: str,
     ) -> Tuple[str, float, Optional[np.ndarray]]:
         """Detect + OCR a plate, enforcing the configured confidence threshold."""
-        detections = self.detector.detect(frame)
+        detections = self.detector.predict(frame)
         plate_str = fallback_plate or ""
-        confidence = 1.0 if fallback_plate else 0.0
+        confidence = 0.0  # Manual input is not an AI confidence score.
         cropped_roi = None
 
         if detections:
             best_det = max(detections, key=lambda d: d.confidence)
-            cropped_roi = best_det.cropped_roi
-            ocr_res = self.ocr.recognize(cropped_roi, class_hint=best_det.class_name)
-            if ocr_res and ocr_res.plate_number:
-                ocr_conf = float(ocr_res.confidence_score or 0.0)
-                if fallback_plate and ocr_res.plate_number in ("30A12345", "29G112345"):
-                    # Demo plates: keep the operator-supplied value.
-                    pass
-                elif fallback_plate:
-                    # Manual plate wins, treated as high confidence.
-                    confidence = 1.0
-                else:
-                    plate_str = ocr_res.plate_number
-                    confidence = ocr_conf
+            cropped_roi = crop_with_padding(frame, best_det.bbox)
+            ocr_res = self.ocr.read(cropped_roi)
+            if ocr_res and ocr_res.text:
+                if not fallback_plate:
+                    plate_str = ocr_res.text
+                    confidence = float(ocr_res.confidence)
+                elif normalize_plate(fallback_plate) == normalize_plate(ocr_res.text):
+                    confidence = float(ocr_res.confidence)
 
         if not plate_str:
-            plate_str = "51F88234"
-            confidence = 0.95
+            raise ValueError("Không nhận diện được biển số. Vui lòng chụp lại hoặc nhập biển số thủ công.")
 
         if confidence < min_confidence and not fallback_plate:
             raise ValueError(
@@ -204,6 +198,9 @@ class CameraConnector:
             return session
         if session.get("is_blacklisted"):
             session["barrier_reason"] = "Biển số nằm trong danh sách đen, không tự động mở barie."
+            return session
+        if direction == "EXIT" and not session.get("is_plate_matched"):
+            session["barrier_reason"] = "Biển số vào/ra không khớp."
             return session
 
         try:
