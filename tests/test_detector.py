@@ -1,62 +1,60 @@
-"""Unit tests for license plate detector and validator."""
+﻿"""Tests for license plate detection helpers."""
 
-import sys
-from pathlib import Path
+from __future__ import annotations
 
-# Add project root to sys.path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+import numpy as np
 
-import numpy as np  # type: ignore
-from src.core.detector import PlateDetection, PlateDetector
-from src.utils.image_processing import crop_plate_roi
-from src.utils.plate_validator import clean_raw_plate_text, format_vietnamese_plate, validate_plate_number
+from src.core.detector import map_vehicle_type, select_vehicle_for_plate
+from src.models import Detection
+from src.utils.image_processing import crop_with_padding
 
 
-def test_plate_validator_car() -> None:
-    # 5-digit car plates
-    is_valid, formatted, vtype = validate_plate_number("30A12345")
-    assert is_valid is True
-    assert formatted == "30A-123.45"
-    assert vtype == "car"
-
-    is_valid, formatted, vtype = validate_plate_number("51K-987.65")
-    assert is_valid is True
-    assert formatted == "51K-987.65"
-    assert vtype == "car"
-
-
-def test_plate_validator_motorcycle() -> None:
-    # 5-digit motorcycle plates
-    is_valid, formatted, vtype = validate_plate_number("29G1 12345")
-    assert is_valid is True
-    assert formatted == "29-G1 123.45"
-    assert vtype == "motorcycle"
-
-    is_valid, formatted, vtype = validate_plate_number("59-X2 888.88")
-    assert is_valid is True
-    assert formatted == "59-X2 888.88"
-    assert vtype == "motorcycle"
+def detection(x1: int, y1: int, x2: int, y2: int, name: str = "car", conf: float = 0.9) -> Detection:
+    return Detection(
+        x1=x1,
+        y1=y1,
+        x2=x2,
+        y2=y2,
+        confidence=conf,
+        class_id=0,
+        class_name=name,
+    )
 
 
-def test_crop_plate_roi() -> None:
-    # Dummy frame 100x100
-    dummy_frame = np.zeros((100, 100, 3), dtype=np.uint8)
-    cropped = crop_plate_roi(dummy_frame, (10, 10, 50, 40), padding=2)
-    assert cropped.shape[0] > 0
-    assert cropped.shape[1] > 0
+def test_detection_geometry() -> None:
+    box = detection(10, 20, 40, 60)
+    assert box.width == 30
+    assert box.height == 40
+    assert box.area == 1200
+    assert box.center == (25.0, 40.0)
 
 
-def test_detector_initialization() -> None:
-    detector = PlateDetector()
-    assert isinstance(detector.is_ready(), bool)
-    detections = detector.detect(np.zeros((100, 100, 3), dtype=np.uint8))
-    assert detections == []
+def test_map_vehicle_type() -> None:
+    assert map_vehicle_type("motorbike") == "motorcycle"
+    assert map_vehicle_type("bicycle") == "motorcycle"
+    assert map_vehicle_type("van") == "car"
+    assert map_vehicle_type("truck") == "truck"
+    assert map_vehicle_type("unknown") == "car"
 
 
-if __name__ == "__main__":
-    test_plate_validator_car()
-    test_plate_validator_motorcycle()
-    test_crop_plate_roi()
-    test_detector_initialization()
-    print("[SUCCESS] All tests passed!")
+def test_select_vehicle_prefers_smallest_containing_box() -> None:
+    plate = detection(100, 100, 140, 120, name="license_plate")
+    big_car = detection(0, 0, 400, 300, name="car")
+    small_car = detection(80, 80, 180, 150, name="car")
+
+    selected = select_vehicle_for_plate(plate, [big_car, small_car])
+    assert selected is small_car
+
+
+def test_select_vehicle_returns_none_without_vehicles() -> None:
+    plate = detection(100, 100, 140, 120, name="license_plate")
+    assert select_vehicle_for_plate(plate, []) is None
+
+
+def test_crop_with_padding_and_clamping() -> None:
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+    crop = crop_with_padding(image, (10, 10, 30, 30), pad_ratio=0.5)
+    assert crop.shape[:2] == (40, 40)
+
+    clamped = crop_with_padding(image, (0, 0, 10, 10), pad_ratio=1.0)
+    assert clamped.shape[:2] == (20, 20)

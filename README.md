@@ -20,6 +20,7 @@ Hệ thống nhận diện biển số xe (Automatic License Plate Recognition -
 7. [Danh sách REST API chính](#7-danh-sách-rest-api-chính)
 8. [Kiểm thử hệ thống (Testing)](#8-kiểm-thử-hệ-thống-testing)
 9. [Xử lý lỗi thường gặp (Troubleshooting)](#9-xử-lý-lỗi-thường-gặp-troubleshooting)
+10. [Chạy Pipeline Offline / Camera trực tiếp qua CLI](#10-chạy-pipeline-offline--camera-trực-tiếp-qua-cli)
 
 ---
 
@@ -436,3 +437,26 @@ Sau đó nhấn `Ctrl + C` và chạy lại `npm run dev`.
 ---
 
 Chúc bạn cài đặt và trải nghiệm thành công hệ thống **SMART ALPR 2.0**! 🚀
+
+---
+
+## 10. Chạy Pipeline Offline / Camera trực tiếp qua CLI
+
+Ngoài backend API, dự án còn entrypoint dòng lệnh `alpr_cli.py` để xử lý video offline hoặc camera trực tiếp mà không cần giao diện web:
+
+```bash
+# Xử lý một video
+python alpr_cli.py data/sample_videos/demo.mp4
+
+# Xử lý toàn bộ video trong thư mục
+python alpr_cli.py data/sample_videos --output output/
+
+# Chạy webcam / RTSP realtime
+python alpr_cli.py --camera 0
+python alpr_cli.py --camera rtsp://user:pass@host/stream --duration 60 --save-video
+
+# Xuất JSON summary, tắt ghi DB
+python alpr_cli.py data/sample_videos/demo.mp4 --json --no-db
+```
+
+> `main.py` dùng để khởi chạy backend FastAPI server; `alpr_cli.py` dùng cho pipeline offline/CLI.

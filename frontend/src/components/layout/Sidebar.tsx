@@ -46,8 +46,8 @@ const NAV_ITEMS = [
     badge: null,
   },
   {
-    name: "Camera cổng bãi",
-    href: "/cameras",
+    name: "Camera trực tiếp",
+    href: "/camera",
     icon: Camera,
     badge: "Live",
   },

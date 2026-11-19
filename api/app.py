@@ -16,6 +16,7 @@ from api.routes.camera import router as camera_router
 from api.routes.parking import router as parking_router
 from api.routes.plates import router as plates_router
 from api.routes.settings import router as settings_router
+from api.routes.training import router as training_router
 from api.routes.videos import router as videos_router
 
 TAGS_METADATA = [
@@ -156,6 +157,7 @@ def create_app() -> FastAPI:
     app.include_router(plates_router, prefix="/api/v1")
     app.include_router(analytics_router, prefix="/api/v1")
     app.include_router(settings_router, prefix="/api/v1")
+    app.include_router(training_router, prefix="/api/v1")
 
     # Also map parking/plates/analytics/settings to root so clients without /api/v1 prefix still work seamlessly
     app.include_router(parking_router, include_in_schema=False)
