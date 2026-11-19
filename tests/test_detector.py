@@ -1,4 +1,4 @@
-"""Tests for license plate detection helpers."""
+﻿"""Tests for license plate detection helpers."""
 
 from __future__ import annotations
 

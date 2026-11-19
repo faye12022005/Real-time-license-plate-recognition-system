@@ -195,3 +195,7 @@ def normalize_image_for_display(images: Sequence[np.ndarray]) -> list[np.ndarray
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         normalized.append(image)
     return normalized
+
+
+# Compatibility alias
+crop_plate_roi = crop_with_padding

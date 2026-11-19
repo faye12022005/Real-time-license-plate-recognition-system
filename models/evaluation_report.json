@@ -1,0 +1,22 @@
+{
+  "model_path": "D:\\Khanh\\Python\\Real-time-license-plate-recognition-system\\models\\plate_detector.pt",
+  "device": "cpu",
+  "metrics": {
+    "mAP50": 0.0009,
+    "mAP50_95": 0.0002,
+    "precision": 0.0076,
+    "recall": 0.2813,
+    "classes": {
+      "plate_1_line": 0.0002,
+      "plate_2_line": 0.0002
+    }
+  },
+  "performance": {
+    "resolution": "1280x720",
+    "avg_latency_ms": 60.29,
+    "min_latency_ms": 53.12,
+    "p95_latency_ms": 66.03,
+    "fps": 16.6,
+    "is_realtime": false
+  }
+}

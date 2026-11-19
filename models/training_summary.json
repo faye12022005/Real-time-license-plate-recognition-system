@@ -1,0 +1,19 @@
+{
+  "base_model": "yolov8n.pt",
+  "epochs_target": 15,
+  "batch_size": 16,
+  "img_size": 640,
+  "training_duration_seconds": 2275.21,
+  "model_path": "D:\\Khanh\\Python\\Real-time-license-plate-recognition-system\\models\\plate_detector.pt",
+  "model_size_mb": 6.2,
+  "metrics": {
+    "mAP50": 0.804,
+    "mAP50_95": 0.468,
+    "precision": 0.828,
+    "recall": 0.7174
+  },
+  "classes": {
+    "0": "plate_1_line",
+    "1": "plate_2_line"
+  }
+}

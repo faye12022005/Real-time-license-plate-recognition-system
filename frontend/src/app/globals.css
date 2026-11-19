@@ -76,3 +76,63 @@
 .animate-tech-pulse {
   animation: tech-pulse 2s infinite ease-in-out;
 }
+
+/* Realtime License Plate Highlight & Entry Animations */
+@keyframes realTimePlateEntry {
+  0% {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.98);
+    background-color: rgba(16, 185, 129, 0.3);
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(0) scale(1.005);
+    background-color: rgba(16, 185, 129, 0.2);
+    box-shadow: 0 0 25px rgba(16, 185, 129, 0.35);
+  }
+  65% {
+    background-color: rgba(16, 185, 129, 0.08);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+.animate-plate-entry {
+  animation: realTimePlateEntry 6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes liveBadgePulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.05);
+    box-shadow: 0 0 16px rgba(16, 185, 129, 0.9);
+  }
+}
+
+.animate-live-badge {
+  animation: liveBadgePulse 1.5s infinite ease-in-out;
+}
+
+@keyframes radarPing {
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.animate-radar-ping {
+  animation: radarPing 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}

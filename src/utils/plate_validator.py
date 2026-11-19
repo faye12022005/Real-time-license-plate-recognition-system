@@ -198,3 +198,8 @@ def plate_series(text: str) -> str:
         return ""
     tail_length = 5 if len(candidate) >= 8 else 4
     return candidate[2: len(candidate) - tail_length]
+
+
+# Compatibility aliases for parking and other modules
+normalize_plate = canonicalize_plate
+format_vietnamese_plate = format_plate

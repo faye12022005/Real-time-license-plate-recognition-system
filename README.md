@@ -1,226 +1,462 @@
-﻿# Real-time License Plate Recognition System
+# 🚗 SMART ALPR 2.0 - HỆ THỐNG NHẬN DIỆN BIỂN SỐ XE THỜI GIAN THỰC & QUẢN LÝ BÃI XE THÔNG MINH
 
-Pipeline Python nhận diện biển số xe từ video offline hoặc camera/RTSP thời gian thực, sử dụng 3 model YOLO11n đã huấn luyện:
+Hệ thống nhận diện biển số xe (Automatic License Plate Recognition - ALPR) ứng dụng Trí tuệ nhân tạo (YOLOv8 + EasyOCR), kết hợp quản lý vận hành bãi đỗ xe thông minh theo thời gian thực cho tòa nhà/chung cư. Dự án được xây dựng với kiến trúc hướng dịch vụ gồm **FastAPI** backend, giao diện quản trị **Next.js 14 (App Router)** và hỗ trợ đa cơ sở dữ liệu (**SQLite**, **MySQL**, **SQL Server**).
 
-| Model | File | Vai trò |
-|---|---|---|
-| Vehicle detector | `data/models/vehicle_detector.pt` | Phát hiện phương tiện (7 class: bicycle, bus, car, motorbike, rickshaw, truck, van) |
-| Plate detector | `data/models/plate_detector.pt` | Phát hiện vùng biển số (`license_plate`) |
-| Character detector | `data/models/plate_char_detector.pt` | Nhận diện từng ký tự biển số (36 class: `0-9`, `A-Z`) |
+---
 
-> **Ghi chú:** model ký tự thực tế có đủ 36 class (`0-9`, `A-Z`). Pipeline mặc định dùng
-> **hybrid**: EasyOCR đọc toàn bộ biển, model ký tự xác nhận/sửa từng ký tự (ví dụ
-> EasyOCR đọc thiếu chữ `F` trong `5188234` → `51F88234`). Có thể chạy hoàn toàn bằng
-> model ký tự với `--ocr char` nếu không muốn cài EasyOCR.
+## 📌 Mục lục
 
-## Cài đặt
+1. [Tổng quan & Tính năng chính](#1-tổng-quan--tính-năng-chính)
+2. [Yêu cầu hệ thống](#2-yêu-cầu-hệ-thống)
+3. [Hướng dẫn cài đặt và chạy dự án (Từng bước)](#3-hướng-dẫn-cài-đặt-và-chạy-dự-án-từng-bước)
+   - [Bước 1: Chuẩn bị mã nguồn](#bước-1-chuẩn-bị-mã-nguồn)
+   - [Bước 2: Cài đặt và cấu hình Backend](#bước-2-cài-đặt-và-cấu-hình-backend)
+   - [Bước 3: Lựa chọn và cấu hình Cơ sở dữ liệu](#bước-3-lựa-chọn-và-cấu-hình-cơ-sở-dữ-liệu)
+   - [Bước 4: Khởi chạy Backend](#bước-4-khởi-chạy-backend)
+   - [Bước 5: Cài đặt và khởi chạy Frontend](#bước-5-cài-đặt-và-khởi-chạy-frontend)
+4. [Hướng dẫn trải nghiệm các tính năng](#4-hướng-dẫn-trải-nghiệm-các-tính-năng)
+5. [Cấu hình Docker (Tùy chọn cho SQL Server)](#5-cấu-hình-docker-tùy-chọn-cho-sql-server)
+6. [Cấu trúc thư mục dự án](#6-cấu-trúc-thư-mục-dự-án)
+7. [Danh sách REST API chính](#7-danh-sách-rest-api-chính)
+8. [Kiểm thử hệ thống (Testing)](#8-kiểm-thử-hệ-thống-testing)
+9. [Xử lý lỗi thường gặp (Troubleshooting)](#9-xử-lý-lỗi-thường-gặp-troubleshooting)
+10. [Chạy Pipeline Offline / Camera trực tiếp qua CLI](#10-chạy-pipeline-offline--camera-trực-tiếp-qua-cli)
 
-```powershell
-cd D:\Python\Real-time-license-plate-recognition-system
-python -m pip install -r requirements.txt
+---
+
+## 1. Tổng quan & Tính năng chính
+
+### 🎯 Nhận diện AI & Xử lý Video
+- **Phát hiện biển số (YOLOv8):** Nhận diện biển số xe máy và ô tô, hỗ trợ cả định dạng biển 1 dòng và 2 dòng chuẩn Việt Nam (model trọng số huấn luyện sẵn tại `models/plate_detector.pt`).
+- **Đọc ký tự quang học (EasyOCR):** Tiền xử lý ảnh (cân bằng độ sáng, khử nhiễu, làm thẳng) và giải mã ký tự biển số.
+- **Theo vết phương tiện (IoU Tracker):** Theo dõi đối tượng qua từng khung hình (frame), tránh nhận diện lặp lại một xe nhiều lần trong video.
+- **Xử lý nền (Background Processing):** Upload video dài, xử lý bất đồng bộ, cập nhật tiến trình % theo thời gian thực.
+- **Truy vết lịch sử (Trace):** Tìm kiếm hành trình phương tiện qua nhiều camera hoặc các video đã upload.
+
+### 🅿️ Quản lý bãi đỗ xe thông minh (Smart Parking)
+- **Quản lý Camera làn Vào/Ra (Entry/Exit):** Kết nối camera RTSP từ IP camera hoặc dùng Webcam máy tính (`rtsp_url = "0"`).
+- **Xem trước & Snapshot:** Xem ảnh chụp tức thời từ camera trực tiếp trên Web.
+- **Check-in / Check-out tự động:** Tự động chụp xe, nhận diện biển số, ghi nhận thời gian vào/ra và lưu ảnh bằng chứng.
+- **Phân loại vé & Tính phí tự động:**
+  - *Xe cư dân (Resident):* Quản lý theo số căn hộ, hạn vé tháng, tự động miễn phí gửi xe khi check-out.
+  - *Khách vãng lai (Guest):* Tính tiền tự động theo biểu phí (ô tô/xe máy, theo giờ gửi).
+- **Đối soát an ninh:** Cảnh báo và kiểm tra khớp biển số giữa lúc vào và lúc ra (`is_plate_matched`).
+- **Dashboard Thống kê:** Báo cáo tổng số lượt xe, xe đang đỗ trong bãi, công suất bãi và doanh thu theo ngày.
+
+---
+
+## 2. Yêu cầu hệ thống
+
+Trước khi bắt đầu, hãy đảm bảo máy tính của bạn đã cài đặt các công cụ sau:
+
+- **Hệ điều hành:** Windows 10/11, macOS, hoặc Linux (Ubuntu 20.04+).
+- **Python:** Phiên bản **3.10** hoặc **3.11** (khuyến nghị 3.10/3.11 để tương thích tốt nhất với PyTorch và EasyOCR).
+- **Node.js:** Phiên bản **18.x** hoặc **20.x** LTS (kèm `npm`).
+- **Phần cứng:**
+  - CPU tối thiểu 4 lõi, RAM tối thiểu 8GB (khuyến nghị 16GB nếu chạy đồng thời nhiều pipeline video).
+  - Có card đồ họa NVIDIA (CUDA) sẽ giúp pipeline AI chạy nhanh hơn, nhưng hệ thống vẫn chạy tốt trên CPU.
+- **Cơ sở dữ liệu (tùy chọn 1 trong 3):**
+  - **SQLite:** Đã tích hợp sẵn trong Python, **không cần cài đặt thêm bất kỳ phần mềm nào** (khuyến nghị cho chạy thử nghiệm cá nhân).
+  - **MySQL (8.0+ / 9.0+):** Phù hợp môi trường web/dev thông dụng (cổng 3306).
+  - **Microsoft SQL Server:** Phù hợp môi trường doanh nghiệp hoặc chạy qua Docker (cổng 1433).
+
+---
+
+## 3. Hướng dẫn cài đặt và chạy dự án (Từng bước)
+
+### Bước 1: Chuẩn bị mã nguồn
+
+Mở terminal (PowerShell, Command Prompt hoặc Bash) và điều hướng vào thư mục dự án:
+
+```bash
+cd Real-time-license-plate-recognition-system
 ```
 
-Nếu dùng GPU, cài `torch`/`torchvision` bản CUDA phù hợp trước, sau đó thêm `--gpu`
-(EasyOCR) và/hoặc `--device 0` (Ultralytics).
+Kiểm tra thư mục `models/`: File mô hình `models/plate_detector.pt` đã được tích hợp sẵn trong repository.
 
-## Chạy
+---
 
+### Bước 2: Cài đặt và cấu hình Backend
+
+#### 2.1. Tạo môi trường ảo Python (Virtual Environment)
+
+**Trên Windows (PowerShell):**
 ```powershell
-# Xử lý một video
-python main.py "D:\Python\Training\testvideo\test_4.mp4"
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+*(Nếu gặp lỗi PowerShell chặn script, chạy lệnh: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` rồi chạy lại lệnh activate)*
 
-# Chỉ định thư mục output
-python main.py video.mp4 --output output\demo
+**Trên Windows (Command Prompt - CMD):**
+```bat
+python -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+**Trên Linux / macOS:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+#### 2.2. Nâng cấp pip và cài đặt thư viện phụ thuộc
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install python-multipart pytest httpx pymysql
+```
+
+> **Lưu ý:**
+> - `python-multipart`: Bắt buộc để FastAPI nhận file upload ảnh/video.
+> - `pymysql`: Cần nếu bạn sử dụng cơ sở dữ liệu MySQL.
+> - Khi EasyOCR chạy lần đầu tiên, nó sẽ tự động tải weights mô hình nhận diện chữ (khoảng 80MB) từ internet về thư mục `~/.EasyOCR/`.
+
+---
+
+### Bước 3: Lựa chọn và cấu hình Cơ sở dữ liệu
+
+Hệ thống hỗ trợ cơ chế tự động nhận diện và fallback cơ sở dữ liệu rất linh hoạt. Hãy tạo một file `.env.local` ở **thư mục gốc** của dự án (cùng cấp với `main.py`).
+
+Chọn **MỘT** trong các cấu hình dưới đây:
+
+#### 👉 LỰA CHỌN A: Dùng SQLite (Khuyến nghị - Nhanh nhất, không cần cài đặt DB)
+Tạo file `.env.local` với nội dung:
+```dotenv
+DB_ENGINE=sqlite
+```
+*Hệ thống sẽ tự động tạo file cơ sở dữ liệu và bảng tương ứng tại `data/alpr.db` khi khởi động backend.*
+
+#### 👉 LỰA CHỌN B: Dùng MySQL (Nếu máy đã có XAMPP, WampServer hoặc MySQL Server)
+Nếu bạn có MySQL đang chạy tại cổng `3306`:
+```dotenv
+DB_ENGINE=mysql
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_DB=ALPR_DB
+MYSQL_USER=root
+MYSQL_PASSWORD=123456789
+```
+*Lưu ý thay `MYSQL_PASSWORD` bằng mật khẩu MySQL của bạn. Hệ thống sẽ tự động tạo database `ALPR_DB` và các bảng nếu chưa có.*
+
+#### 👉 LỰA CHỌN C: Dùng Microsoft SQL Server
+Nếu máy đã cài SQL Server hoặc chạy SQL Server qua Docker:
+```dotenv
+DB_ENGINE=sqlserver
+SQLSERVER_HOST=localhost
+SQLSERVER_PORT=1433
+SQLSERVER_DB=ALPR_DB
+SQLSERVER_USER=sa
+SQLSERVER_PASSWORD=YourStrong@Pass123
+SQLSERVER_DRIVER=ODBC Driver 18 for SQL Server
+SQLSERVER_TRUSTED=no
+```
+
+> **Mẹo:** Bạn có thể chạy script kiểm tra nhanh kết nối cơ sở dữ liệu bất cứ lúc nào bằng lệnh:
+> ```bash
+> python scripts/check_database_connections.py
+> ```
+
+---
+
+### Bước 4: Khởi chạy Backend
+
+Khởi động server Backend bằng lệnh:
+
+```bash
+python main.py
+```
+
+Khi khởi động thành công, terminal sẽ in ra bảng thông báo:
+```text
+====================================================================
+ 🚀 SMART ALPR 2.0 BACKEND SERVER (PARKING & LICENSE PLATE SYSTEM)
+====================================================================
+ • Cơ sở dữ liệu  : SQLITE / MYSQL / SQL SERVER
+ • Tên Database   : ALPR_DB
+ • Trạng thái DB  : Kết nối thành công
+ • API Base URL   : http://localhost:8000/api/v1
+ • Swagger Docs   : http://localhost:8000/docs
+ • ReDoc          : http://localhost:8000/redoc
+ • Next.js Client : http://localhost:3000
+====================================================================
+```
+
+Kiểm tra trên trình duyệt:
+- **Tài liệu API (Swagger UI):** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Kiểm tra trạng thái Health:** [http://localhost:8000/health](http://localhost:8000/health)
+
+---
+
+### Bước 5: Cài đặt và khởi chạy Frontend
+
+Mở một **cửa sổ Terminal mới** (giữ nguyên cửa sổ Backend đang chạy):
+
+1. Điều hướng vào thư mục `frontend`:
+   ```bash
+   cd frontend
+   ```
+
+2. Kiểm tra file `.env.local` ở **thư mục gốc dự án** đã có các biến frontend (gộp chung với backend):
+   ```dotenv
+   NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+   NEXT_PUBLIC_WS_URL=ws://localhost:8000
+   NEXT_TELEMETRY_DISABLED=1
+   ```
+   (Frontend tự đọc các biến này từ `.env.local` ở root; không cần tạo `frontend/.env.local`.)
+
+3. Cài đặt các gói phụ thuộc (nếu chưa cài):
+   ```bash
+   npm install
+   ```
+
+4. Khởi chạy máy chủ giao diện Next.js:
+   ```bash
+   npm run dev
+   ```
+
+5. Mở trình duyệt và truy cập:
+   👉 **[http://localhost:3000](http://localhost:3000)**
+
+---
+
+## 4. Hướng dẫn trải nghiệm các tính năng
+
+Sau khi cả Backend (`:8000`) và Frontend (`:3000`) đều đã hoạt động, bạn có thể thực hiện các thao tác:
+
+### 1. Thêm camera giám sát & Kiểm tra Webcam máy tính
+1. Vào mục **Cameras** (`http://localhost:3000/cameras`).
+2. Bấm nút **"Thêm camera mới"**:
+   - **Tên:** Camera Làn Vào 1
+   - **Loại:** `ENTRY` (Làn vào) hoặc `EXIT` (Làn ra)
+   - **RTSP URL:** Nhập số `0` để sử dụng trực tiếp **Webcam tích hợp trên máy tính**, hoặc nhập đường dẫn RTSP của camera IP (ví dụ: `rtsp://admin:pass@192.168.1.100:554/stream1`).
+3. Bấm **"Kiểm tra kết nối"** để hệ thống lấy frame snapshot xem trước trực tiếp trên giao diện.
+
+### 2. Thử nghiệm Check-in / Check-out xe bãi đỗ
+- **Check-in bằng Upload ảnh hoặc Camera:**
+  - Gửi ảnh xe qua giao diện hoặc gọi API `POST /api/v1/parking/check-in/upload`.
+  - Hệ thống tự động nhận diện biển số, gắn nhãn thời gian, lưu ảnh toàn cảnh và ảnh crop biển số.
+- **Check-out:**
+  - Gọi API hoặc bấm Check-out bằng biển số: Hệ thống đối soát xe với lúc vào, tự động tính tổng thời gian đỗ, tính phí dựa trên loại vé (Cư dân: 0đ, Khách: theo bảng giá) và cập nhật trạng thái đã thanh toán.
+
+### 3. Tải video nhận diện biển số & Theo vết (Tracing)
+1. Vào mục **Upload Video** (`http://localhost:3000/upload`).
+2. Chọn file video xe cộ (định dạng `.mp4`, `.avi`, `.mkv`).
+3. Hệ thống sẽ tiếp nhận và xử lý ngầm (Background Task). Tiến độ (%) và số frame đã quét sẽ được hiển thị.
+4. Sau khi hoàn tất:
+   - Vào mục **Plates** để tra cứu danh sách toàn bộ các biển số nhận diện được cùng độ tin cậy và ảnh crop.
+   - Vào mục **Trace** để nhập một biển số (ví dụ: `30A-123.45`) và xem dòng thời gian (timeline) xuất hiện của phương tiện.
+
+### 4. Đăng ký xe cư dân (Vé tháng)
+- Gọi API `POST /api/v1/parking/residents` để thêm xe cư dân (biển số, chủ xe, số căn hộ, ngày hết hạn vé). Xe cư dân khi vào/ra sẽ tự động được nhận diện diện ưu tiên miễn phí.
+
+### 5. Cấu hình hệ thống (`/settings`)
+- Mở mục **Cấu hình hệ thống** trên sidebar để thiết lập:
+  - **Bãi xe & Bảng giá:** giá xe máy/ô tô/xe đạp/xe điện theo ngày/đêm, grace period, sức chứa tối đa (Dashboard tự cảnh báo "Bãi xe sắp đầy" khi đạt 85%).
+  - **AI & Barie:** ngưỡng tin cậy nhận diện, sai số ký tự khi đối soát, chế độ chụp ảnh bằng chứng, tự động mở barie cho xe cư dân.
+  - **An ninh:** danh sách đen biển số, cảnh báo lệch biển số/loại xe, xe gửi quá hạn.
+  - **Lưu trữ:** thời hạn giữ video/ảnh crop, dọn dẹp thủ công hoặc tự động mỗi 6 giờ.
+  - **Tòa nhà & Database:** tên chung cư, hotline, ca trực, kiểm tra kết nối và tải file backup `.sql`.
+- Cấu hình được lưu tại `data/system_settings.json` và áp dụng trực tiếp vào tính cước, đối soát biển số và luồng mở barie.
+
+---
+
+## 5. Cấu hình Docker (Tùy chọn cho SQL Server)
+
+Nếu muốn chạy Microsoft SQL Server trong container Docker mà không cần cài trực tiếp vào máy tính:
+
+1. Chạy container SQL Server từ file `docker-compose.yml` có sẵn:
+   ```bash
+   docker compose up -d sqlserver
+   ```
+2. Đảm bảo cấu hình trong file `.env.local` ở thư mục gốc:
+   ```dotenv
+   DB_ENGINE=sqlserver
+   SQLSERVER_HOST=localhost
+   SQLSERVER_PORT=1433
+   SQLSERVER_DB=ALPR_DB
+   SQLSERVER_USER=sa
+   SQLSERVER_PASSWORD=YourStrong@Pass123
+   SQLSERVER_DRIVER=ODBC Driver 18 for SQL Server
+   SQLSERVER_TRUSTED=no
+   ```
+3. Khởi động backend `python main.py` như bình thường.
+
+---
+
+## 6. Cấu trúc thư mục dự án
+
+```text
+Real-time-license-plate-recognition-system/
+├── api/
+│   ├── app.py                      # Cấu hình FastAPI, middleware CORS, mount static
+│   └── routes/
+│       ├── analytics.py            # API thống kê KPI, báo cáo doanh thu bãi xe
+│       ├── parking.py              # API camera, check-in/out, quản lý xe cư dân
+│       ├── plates.py               # API tra cứu biển số, truy vết phương tiện
+│       ├── settings.py             # API cấu hình hệ thống, lưu trữ, backup database
+│       └── videos.py               # API upload video và theo dõi tiến độ
+├── config/
+│   ├── settings.py                 # Cấu hình toàn cục, đọc file .env.local
+│   └── camera_config.json          # Cấu hình danh sách camera ban đầu
+├── data/
+│   ├── alpr.db                     # Cơ sở dữ liệu SQLite mặc định (tự sinh)
+│   ├── captures/                   # Ảnh crop biển số từ luồng video
+│   ├── parking_captures/           # Ảnh snapshot và crop xe vào/ra bãi
+│   └── sample_videos/              # Thư mục lưu video upload
+├── frontend/                       # Ứng dụng giao diện Next.js 14 (App Router)
+│   ├── src/app/                    # Các trang: Dashboard, Upload, Cameras, Plates, Trace
+│   ├── src/components/             # Component UI (Navbar, CameraCard, KPIWidget, ...)
+│   ├── src/lib/api.ts              # Axios client kết nối tới Backend FastAPI
+│   ├── package.json
+│   └── .env.local                  # Cấu hình môi trường cho Next.js
+├── models/
+│   └── plate_detector.pt           # Trọng số mô hình YOLOv8 nhận diện biển số (đã train)
+├── scripts/
+│   ├── check_database_connections.py # Script kiểm tra nhanh kết nối DB
+│   ├── train_detector.py           # Script huấn luyện YOLOv8 trên tập dữ liệu mới
+│   └── evaluate_detector.py        # Đánh giá độ chính xác mô hình (mAP, Precision, Recall)
+├── src/
+│   ├── core/
+│   │   ├── detector.py             # PlateDetector (YOLOv8 inference, crop ROI)
+│   │   ├── tracker.py              # VehicleTracker (IoU Tracker theo dõi vết xe)
+│   │   └── ocr.py                  # PlateOCR (EasyOCR + tiền xử lý + hậu xử lý regex)
+│   ├── database/
+│   │   ├── connection.py           # Kết nối linh hoạt SQLite / MySQL / SQL Server
+│   │   ├── repository.py           # Tầng nghiệp vụ CRUD cơ sở dữ liệu
+│   │   └── schema_*.sql            # Kịch bản tạo bảng cho từng hệ quản trị CSDL
+│   ├── pipeline/
+│   │   ├── alpr_pipeline.py        # Pipeline đọc video -> detect -> track -> ocr -> lưu DB
+│   │   ├── camera_connector.py     # Kết nối RTSP/webcam, snapshot, xử lý vào/ra
+│   │   └── stream_reader.py        # Đọc frame từ video với OpenCV
+│   └── utils/
+│       ├── image_processing.py     # Tiền xử lý ảnh (deskew, tăng tương phản, resize)
+│       ├── plate_validator.py      # Chuẩn hóa biển số xe Việt Nam
+│       ├── settings_store.py       # Lưu cấu hình hệ thống, dung lượng, dọn dẹp, backup DB
+│       └── logger.py               # Cấu hình ghi log hệ thống
+├── tests/                          # Bộ kiểm thử tự động pytest
+├── docker-compose.yml              # Khởi chạy SQL Server container
+├── main.py                         # Điểm khởi chạy chính Backend (Uvicorn Server)
+├── requirements.txt                # Danh sách thư viện Python
+└── README.md                       # Hướng dẫn dự án
+```
+
+---
+
+## 7. Danh sách REST API chính
+
+Swagger UI đầy đủ và tài liệu tương tác có tại: `http://localhost:8000/docs`
+
+| Phân hệ | Phương thức | Endpoint | Mô tả |
+|---|---|---|---|
+| **Hệ thống** | `GET` | `/health` hoặc `/api/v1/health` | Kiểm tra tình trạng backend |
+| **Thống kê** | `GET` | `/api/v1/analytics/kpis` | Thống kê số lượng xe, doanh thu, phiên gửi xe |
+| **Video** | `POST` | `/api/v1/videos/upload` | Upload video (hỗ trợ `.mp4`, `.mkv`, `.avi`, ...) |
+| | `GET` | `/api/v1/videos/jobs` | Danh sách tiến độ các video đang xử lý |
+| | `GET` | `/api/v1/videos/jobs/{job_id}` | Xem chi tiết tiến độ xử lý của một video |
+| **Biển số** | `GET` | `/api/v1/plates/records` | Lấy danh sách biển số đã nhận diện (có tìm kiếm, phân trang) |
+| | `GET` | `/api/v1/plates/trace` | Truy vết lịch sử xuất hiện của biển số xe |
+| **Camera** | `GET` | `/api/v1/parking/cameras` | Danh sách cấu hình camera trong hệ thống |
+| | `POST` | `/api/v1/parking/cameras` | Thêm mới hoặc cập nhật thông tin camera |
+| | `POST` | `/api/v1/parking/cameras/{id}/test`| Kiểm tra kết nối tới camera RTSP/Webcam |
+| | `GET` | `/api/v1/parking/cameras/{id}/snapshot`| Lấy ảnh JPEG chụp trực tiếp từ camera |
+| **Bãi xe** | `POST` | `/api/v1/parking/check-in` | Thực hiện Check-in xe tự động qua camera |
+| | `POST` | `/api/v1/parking/check-in/upload` | Check-in xe bằng file ảnh chụp gửi lên |
+| | `POST` | `/api/v1/parking/check-out` | Thực hiện Check-out xe qua camera |
+| | `POST` | `/api/v1/parking/check-out/upload` | Check-out xe bằng file ảnh chụp gửi lên |
+| | `GET` | `/api/v1/parking/sessions` | Lịch sử các phiên gửi xe (đang đỗ, đã ra) |
+| | `GET` | `/api/v1/parking/residents` | Danh sách xe cư dân đăng ký vé tháng |
+| | `POST` | `/api/v1/parking/residents` | Đăng ký mới hoặc gia hạn vé tháng cho cư dân |
+| **Cấu hình** | `GET` | `/api/v1/settings` | Lấy toàn bộ cấu hình hệ thống |
+| | `PUT` | `/api/v1/settings` | Lưu bảng giá, AI/barie, an ninh, lưu trữ, tòa nhà |
+| | `GET` | `/api/v1/settings/storage` | Dung lượng các thư mục media và ổ đĩa |
+| | `POST` | `/api/v1/settings/cleanup` | Dọn dẹp video/ảnh cũ theo thời hạn lưu trữ |
+| | `GET` | `/api/v1/settings/database/status` | Kiểm tra kết nối và số bản ghi database |
+| | `GET` | `/api/v1/settings/database/backup` | Tải file backup `.sql` (SQLite/MySQL) |
+
+---
+
+## 8. Kiểm thử hệ thống (Testing)
+
+Dự án đi kèm bộ test tự động kiểm thử từ mức unit cho đến tích hợp toàn bộ pipeline:
+
+Kích hoạt môi trường ảo và chạy:
+
+```bash
+# Chạy toàn bộ các bài test
+python -m pytest -v
+
+# Chạy riêng kiểm thử API
+python -m pytest tests/test_api.py -v
+
+# Chạy riêng kiểm thử luồng bãi đỗ xe & Database
+python -m pytest tests/test_parking_db.py -v
+
+# Chạy kiểm thử trọn vẹn luồng AI Pipeline
+python -m pytest tests/test_real_pipeline.py -v
+```
+
+---
+
+## 9. Xử lý lỗi thường gặp (Troubleshooting)
+
+### ❓ 1. Lỗi `No module named 'multipart'` khi upload video hoặc ảnh
+**Nguyên nhân:** Thiếu thư viện xử lý multipart form của FastAPI.  
+**Cách xử lý:** Chạy lệnh:
+```bash
+pip install python-multipart
+```
+
+### ❓ 2. Next.js (`npm run dev`) bị treo lâu trước khi báo "Ready"
+**Nguyên nhân:** Mạng chặn hoặc chập chờn khi kết nối tới registry npm để kiểm tra telemetry.  
+**Cách xử lý:** Đảm bảo file `.env.local` ở thư mục gốc dự án có dòng:
+```dotenv
+NEXT_TELEMETRY_DISABLED=1
+```
+Sau đó nhấn `Ctrl + C` và chạy lại `npm run dev`.
+
+### ❓ 3. Lỗi kết nối Database `SQL Server does not exist or access denied`
+**Nguyên nhân:** Máy tính chưa mở SQL Server hoặc thông tin port/user/pass trong cấu hình chưa đúng.  
+**Cách xử lý:**
+- Nếu không bắt buộc dùng SQL Server, hãy mở file `.env.local` ở thư mục gốc và sửa lại:
+  ```dotenv
+  DB_ENGINE=sqlite
+  ```
+  Hệ thống sẽ chạy với SQLite cực kỳ ổn định và mượt mà mà không cần bất kỳ dịch vụ database ngoài nào.
+
+### ❓ 4. Kiểm tra webcam máy tính báo lỗi kết nối
+**Nguyên nhân:** Ứng dụng khác (Zoom, Teams, Camera app của Windows) đang chiếm dụng webcam.  
+**Cách xử lý:**
+- Đóng các ứng dụng đang dùng camera.
+- Khi thêm camera trên Web, đặt `rtsp_url` là chuỗi `"0"`. Nếu máy có nhiều camera (ví dụ webcam rời gắn ngoài), thử đổi thành `"1"` hoặc `"2"`.
+
+### ❓ 5. EasyOCR xử lý chậm trong lần đầu nhận diện
+**Nguyên nhân:** Lần đầu chạy, thư viện EasyOCR tải model mạng nơ-ron từ máy chủ về máy và khởi tạo bộ nhớ đệm trên CPU.  
+**Cách xử lý:** Chờ 30-60 giây để quá trình tải và khởi tạo hoàn tất. Từ các lượt nhận diện tiếp theo, thời gian xử lý sẽ nhanh hơn đáng kể.
+
+---
+
+Chúc bạn cài đặt và trải nghiệm thành công hệ thống **SMART ALPR 2.0**! 🚀
+
+---
+
+## 10. Chạy Pipeline Offline / Camera trực tiếp qua CLI
+
+Ngoài backend API, dự án còn entrypoint dòng lệnh `alpr_cli.py` để xử lý video offline hoặc camera trực tiếp mà không cần giao diện web:
+
+```bash
+# Xử lý một video
+python alpr_cli.py data/sample_videos/demo.mp4
 
 # Xử lý toàn bộ video trong thư mục
-python main.py "D:\Python\Training\testvideo"
+python alpr_cli.py data/sample_videos --output output/
 
-# Dùng GPU cho EasyOCR và YOLO
-python main.py video.mp4 --gpu --device 0
+# Chạy webcam / RTSP realtime
+python alpr_cli.py --camera 0
+python alpr_cli.py --camera rtsp://user:pass@host/stream --duration 60 --save-video
 
-# Tăng tốc bằng cách bỏ qua frame (inference mỗi 2 frame)
-python main.py video.mp4 --stride 2
-
-# Không ghi video annotated / không lưu DB
-python main.py video.mp4 --no-annotated --no-db
-
-# Chỉ dùng model ký tự (không cần EasyOCR)
-python main.py video.mp4 --ocr char
-
-# Xuất JSON summary ra stdout
-python main.py video.mp4 --json
+# Xuất JSON summary, tắt ghi DB
+python alpr_cli.py data/sample_videos/demo.mp4 --json --no-db
 ```
 
-### Chạy camera thời gian thực
-
-```powershell
-# Webcam mặc định (index 0)
-python main.py --camera 0
-
-# Tự nhận diện nếu source là index hoặc URL stream
-python main.py 0
-python main.py "rtsp://user:pass@192.168.1.10:554/stream1"
-
-# IP camera, giới hạn 60 giây, có ghi video annotated
-python main.py --camera "rtsp://user:pass@192.168.1.10:554/stream1" --duration 60 --save-video
-
-# Chạy không mở cửa sổ preview (phù hợp server/headless)
-python main.py --camera 0 --no-display --max-frames 500
-
-# Tự kết nối lại vô hạn khi stream gián đoạn (Ctrl+C để dừng)
-python main.py --camera "rtsp://192.168.1.10:554/stream1" --reconnect-attempts -1
-```
-
-Ở chế độ camera, biển số được xác nhận và ghi vào MySQL ngay khi đủ số phiếu
-(`--min-votes`), không cần chờ kết thúc phiên. Khi dừng, `results.json`/`results.csv`
-và crop của phiên được lưu trong `output/camera_<timestamp>/`. Mặc định camera không
-ghi video annotated; dùng `--save-video` nếu cần.
-
-### Giao diện web trực quan (Next.js + FastAPI)
-
-Backend FastAPI cung cấp REST API và luồng MJPEG để xem camera nhận diện trực
-tiếp trên trình duyệt:
-
-```powershell
-# Terminal 1: API backend (http://localhost:8000)
-python -m uvicorn api.app:app --host 127.0.0.1 --port 8000
-
-# Terminal 2: giao diện Next.js (http://localhost:3000)
-cd frontend
-npm install
-npm run dev
-```
-
-Mở `http://localhost:3000/camera`, nhập nguồn camera (`0` cho webcam hoặc URL
-RTSP/HTTP), chọn số phiếu tối thiểu rồi bấm **Bắt đầu**. Trang camera hiển thị
-luồng MJPEG có bounding box, FPS, số frame và danh sách biển số vừa xác nhận.
-
-- Swagger/OpenAPI: `http://localhost:8000/docs`
-- Snapshot JPEG: `http://localhost:8000/api/cameras/snapshot`
-- MJPEG stream: `http://localhost:8000/api/cameras/stream`
-- Mặc định không ghi MySQL/không lưu video trong web; bật checkbox tương ứng nếu cần.
-- Có thể đổi origin API bằng `NEXT_PUBLIC_API_ORIGIN` (mặc định
-  `http://localhost:8000`) trong `frontend/.env.local`.
-
-Trang `http://localhost:3000/upload` tải video lên backend thật:
-
-- `POST /api/v1/videos/upload` lưu tệp vào `data/uploads/` và đưa vào hàng đợi xử lý.
-- Worker nền chạy `ALPRPipeline.process_video` tuần tự, cập nhật tiến độ qua
-  `GET /api/v1/videos/jobs` và `GET /api/v1/videos/jobs/{job_id}`.
-- Kết quả biển số: `GET /api/v1/videos/jobs/{job_id}/records`.
-- Video gốc được phục vụ tại `GET /api/v1/videos/{job_id}/file` để trình phát
-  hiển thị đúng video vừa tải lên.
-- Tệp tải lên tối đa 1 GB; định dạng hỗ trợ: MP4, AVI, MOV, MKV, WEBM, M4V,
-  MPG, MPEG.
-
-Xem tất cả tuỳ chọn:
-
-```powershell
-python main.py --help
-```
-
-## Kết quả
-
-Mỗi video tạo một thư mục trong `output/<ten_video>/`:
-
-```
-output/<ten_video>/
-├── <ten_video>_annotated.mp4   # Video có vẽ box + biển số
-├── results.json                # Job + danh sách PlateRecord
-├── results.csv                 # Bảng kết quả
-└── crops/                      # Ảnh crop biển số tốt nhất cho mỗi track
-```
-
-Kết quả được lưu vào MySQL (bảng `jobs` và `plate_records`) trừ khi dùng `--no-db`.
-Có thể truy vấn lại bằng `PlateRepository.trace()` hoặc `kpis()`.
-
-## Kết nối database (MySQL)
-
-Yêu cầu MySQL 8.0+ hoặc MariaDB tương thích. Driver `PyMySQL` đã nằm trong
-`requirements.txt`.
-
-Cấu hình bằng biến môi trường (giá trị trong ngoặc là mặc định):
-
-| Biến | Ý nghĩa |
-|---|---|
-| `ALPR_MYSQL_HOST` | Host MySQL (`127.0.0.1`) |
-| `ALPR_MYSQL_PORT` | Cổng MySQL (`3306`) |
-| `ALPR_MYSQL_USER` | Tài khoản (`root`) |
-| `ALPR_MYSQL_PASSWORD` | Mật khẩu (rỗng) |
-| `ALPR_MYSQL_DATABASE` | Tên database (`alpr`) |
-
-Ví dụ trên PowerShell:
-
-```powershell
-$env:ALPR_MYSQL_HOST = "127.0.0.1"
-$env:ALPR_MYSQL_PORT = "3306"
-$env:ALPR_MYSQL_USER = "alpr"
-$env:ALPR_MYSQL_PASSWORD = "mat-khau"
-$env:ALPR_MYSQL_DATABASE = "alpr"
-```
-
-Database và hai bảng chính được tạo tự động nếu tài khoản có quyền `CREATE`:
-
-```powershell
-# Khởi tạo database/bảng
-python -c "from src.database.connection import init_db; init_db(); print('Database ready')"
-
-# Kiểm tra schema và dữ liệu hiện có
-python -c "from src.database.repository import PlateRepository; print(PlateRepository().kpis())"
-```
-
-Trong mã Python, tạo repository bằng `PlateRepository()` để tự động tạo database và
-các bảng nếu chưa tồn tại:
-
-```python
-from src.database.repository import PlateRepository
-
-repository = PlateRepository()
-records = repository.list_records(limit=50)
-```
-
-Có thể trỏ sang database khác bằng cách truyền tên database:
-
-```python
-repository = PlateRepository("alpr_test")
-```
-
-### Chuyển dữ liệu từ SQLite cũ
-
-Nếu còn file `data/alpr.db` từ phiên bản SQLite, chạy script migration (idempotent,
-dùng upsert nên có thể chạy lại):
-
-```powershell
-python scripts/migrate_sqlite_to_mysql.py
-
-# Hoặc chỉ định nguồn/đích
-python scripts/migrate_sqlite_to_mysql.py --sqlite data\alpr.db --database alpr
-```
-
-## Cấu trúc
-
-- `config/settings.py` — đường dẫn model, ngưỡng confidence, tham số tracker.
-- `src/core/detector.py` — wrapper YOLO cho vehicle/plate và logic chọn xe theo biển.
-- `src/core/ocr.py` — EasyOCR + character detector, fusion và sửa lỗi OCR.
-- `src/core/tracker.py` — IoU tracker gộp detection qua các frame.
-- `src/pipeline/stream_reader.py` — đọc video/camera bằng thread riêng, tự reconnect.
-- `src/pipeline/alpr_pipeline.py` — orchestration, voting, realtime emit, xuất kết quả.
-- `src/utils/plate_validator.py` — chuẩn hoá, sửa lỗi, format biển số VN và mã tỉnh.
-- `src/utils/source.py` — nhận diện/parse nguồn camera và che credentials trong log/DB.
-- `src/database/` — MySQL connection + repository.
-- `api/` — FastAPI server, camera session manager, video upload job manager và
-  REST/MJPEG/upload endpoints.
-- `frontend/` — Next.js dashboard, trang `/camera` để test camera trực quan và
-  trang `/upload` để tải/phân tích video thật.
-- `scripts/migrate_sqlite_to_mysql.py` — chuyển dữ liệu từ SQLite cũ sang MySQL.
-- `tests/` — unit test cho validator, OCR fusion, detector helper, tracker, API; test DB
-  tự skip nếu không kết nối được MySQL.
-
-## Kiểm thử
-
-```powershell
-python -m pytest -q
-```
-
-Test database dùng database riêng `ALPR_TEST_MYSQL_DATABASE` (mặc định `alpr_test`) và
-tự động skip nếu không kết nối được MySQL.
+> `main.py` dùng để khởi chạy backend FastAPI server; `alpr_cli.py` dùng cho pipeline offline/CLI.

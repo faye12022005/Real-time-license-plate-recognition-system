@@ -1,0 +1,12 @@
+# Ultralytics YOLO format dataset configuration for Vietnamese License Plates
+# Used for training YOLOv8/YOLOv11 on plate detection (1-line vs 2-line plates)
+
+path: ./data/datasets/vietnam_license_plate  # Dataset root dir (relative to execution dir or absolute)
+train: images/train                         # Train images (relative to 'path')
+val: images/val                             # Validation images (relative to 'path')
+test: images/test                           # Test images (optional)
+
+# Class definitions
+names:
+  0: plate_1_line   # Biển 1 dòng chữ nhật dài (ô tô thông dụng)
+  1: plate_2_line   # Biển 2 dòng vuông (xe máy, xe tải, ô tô)

@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.Python
 build/
 dist/
 *.egg-info/
@@ -43,19 +44,10 @@ coverage.xml
 Thumbs.db
 desktop.ini
 
-# ---- Runtime data ----
-data/alpr.db
-data/alpr.db-*
-data/captures/*
-!data/captures/.gitkeep
-data/sample_videos/*
-!data/sample_videos/.gitkeep
-data/uploads/*
-
-# Generated recognition output (annotated videos, crops, JSON/CSV)
-output/
-
-# ---- Frontend (Next.js / Node) ----
+# ---- Frontend & Node ----
+node_modules/
+.next/
+out/
 frontend/node_modules/
 frontend/.next/
 frontend/out/
@@ -68,5 +60,33 @@ yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
 
+# ---- Data storage (keep .gitkeep) ----
+data/alpr.db
+data/alpr.db-*
+data/captures/*
+!data/captures/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
+data/output/*
+!data/output/.gitkeep
+data/parking/*
+!data/parking/.gitkeep
+data/models/*
+!data/models/.gitkeep
+data/sample_videos/*
+!data/sample_videos/.gitkeep
+data/datasets/*
+!data/datasets/.gitkeep
+!data/datasets/*.yaml
+data/system_settings.json
+data/backups/
+
+# Generated recognition output (annotated videos, crops, JSON/CSV)
+output/
+
 # ---- Misc ----
 *.log
+
+# OpenCode & local scripts
+.opencode/
+powershell.cmd

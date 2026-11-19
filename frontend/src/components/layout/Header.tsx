@@ -2,12 +2,14 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Bell, Upload, Sparkles } from "lucide-react";
+import { Search, Bell, Upload, Sparkles, Radio } from "lucide-react";
 import Link from "next/link";
+import { useRealtimeConnection } from "@/lib/useRealtime";
 
 export function Header() {
   const router = useRouter();
   const [quickQuery, setQuickQuery] = useState("");
+  const isRealtimeConnected = useRealtimeConnection();
 
   const handleQuickSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,6 +39,23 @@ export function Header() {
 
       {/* Right: Actions, Notifications & Profile */}
       <div className="flex items-center gap-3">
+        {/* Real-time WebSocket Live Sync Status */}
+        <div
+          className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold border transition-all ${
+            isRealtimeConnected
+              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+              : "bg-slate-100 text-slate-500 border-slate-200"
+          }`}
+          title={isRealtimeConnected ? "Đang đồng bộ dữ liệu thời gian thực qua WebSocket" : "Đang kết nối lại máy chủ WebSocket..."}
+        >
+          <span
+            className={`w-2 h-2 rounded-full ${
+              isRealtimeConnected ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
+            }`}
+          />
+          <span>{isRealtimeConnected ? "Live Sync" : "Đang nối..."}</span>
+        </div>
+
         {/* Quick Upload Video Button */}
         <Link
           href="/upload"

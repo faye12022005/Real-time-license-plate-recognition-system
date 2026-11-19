@@ -1,36 +1,57 @@
-import axios from "axios";
-import { DashboardKPIs, VideoJob, PlateRecord, PlateTraceSummary } from "@/types";
-import { MOCK_KPIS, MOCK_JOBS, MOCK_PLATES, getPlateTrace } from "./mockData";
+import axios, { type AxiosError } from "axios";
+import {
+  DashboardKPIs,
+  VideoJob,
+  PlateRecord,
+  PlateTraceSummary,
+  ParkingCamera,
+  CameraInput,
+  CameraConnectionTest,
+  ResidentVehicle,
+  ParkingSession,
+  ParkingDashboardStats,
+  TrainingStatusResponse,
+  TrainingMetrics,
+  PrepareDatasetResponse,
+  TrainRequestInput,
+  SystemSettings,
+  StorageUsage,
+  CleanupResult,
+  DatabaseStatus,
+} from "@/types";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-const API_ORIGIN = process.env.NEXT_PUBLIC_API_ORIGIN || "http://localhost:8000";
+export const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
-export function apiUrl(path: string): string {
-  if (!path) return API_BASE_URL;
-  if (/^https?:\/\//i.test(path)) return path;
-  return `${API_BASE_URL.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
-}
-
-export function mediaUrl(path: string): string {
-  if (!path) return "";
-  if (/^https?:\/\//i.test(path)) return path;
-  return `${API_ORIGIN.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
-}
-
-// Kiểm tra xem người dùng có chủ động bật xem MockData không (Mặc định: FALSE để xem Giao diện Trống)
-export function isMockEnabled(): boolean {
-  if (typeof window !== "undefined") {
-    const saved = localStorage.getItem("alpr_use_mock");
-    if (saved !== null) return saved === "true";
+/** Không gọi được Backend: chưa chạy / CORS / timeout / HTTP 5xx. */
+export class BackendUnreachableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackendUnreachableError";
   }
-  return process.env.NEXT_PUBLIC_USE_MOCK === "true";
 }
 
-export function setMockEnabled(enabled: boolean) {
-  if (typeof window !== "undefined") {
-    localStorage.setItem("alpr_use_mock", enabled ? "true" : "false");
-    window.dispatchEvent(new Event("alpr_mock_mode_changed"));
+function isConnectionFailure(err: unknown): boolean {
+  const e = err as AxiosError | undefined;
+  if (!e?.response) return true; // backend chưa chạy / CORS / DNS
+  if (e.code === "ECONNABORTED") return true; // timeout 10s
+  return e.response.status >= 500; // lỗi phía máy chủ
+}
+
+/**
+ * Xử lý lỗi API tập trung (thay cho `catch {}` nuốt mọi lỗi):
+ * - CLIENT: interceptor đã dispatch "alpr_api_error" → NetworkStatusBanner hiển thị
+ *   → trả dữ liệu rỗng, UI giữ Empty State (không sập trang).
+ * - SERVER (SSR): không có banner để báo → lỗi kết nối PHẢI ném ra để page.tsx bắt được,
+ *   tránh hiển thị số 0 như thể "hệ thống không có dữ liệu".
+ */
+function failOrEmpty<T>(err: unknown, fallback: T): T {
+  if (typeof window === "undefined" && isConnectionFailure(err)) {
+    throw new BackendUnreachableError(
+      "Không kết nối được Backend FastAPI (http://localhost:8000). Hãy khởi chạy backend rồi thử lại."
+    );
   }
+  return fallback;
 }
 
 export const apiClient = axios.create({
@@ -67,13 +88,16 @@ apiClient.interceptors.response.use(
         new CustomEvent("alpr_api_error", {
           detail: {
             message: isNetworkError
-              ? "Không thể kết nối đến máy chủ Backend FastAPI (http://localhost:8000). Vui lòng khởi chạy backend hoặc bật Chế độ Dữ liệu mẫu ở sidebar."
+              ? "Không thể kết nối đến máy chủ Backend FastAPI (http://localhost:8000). Vui lòng kiểm tra backend đã khởi chạy chưa."
               : error.response?.data?.detail || error.message || "Lỗi giao tiếp máy chủ",
             status: error.response?.status,
             isNetworkError,
           },
         })
       );
+    } else {
+      // SSR: không có UI để hiện banner → log để chẩn đoán khi trang server render thất bại
+      console.error("[ALPR API] Request thất bại khi SSR:", error?.message || error);
     }
     return Promise.reject(error);
   }
@@ -87,26 +111,49 @@ const EMPTY_KPIS: DashboardKPIs = {
   avg_accuracy_pct: 0,
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const toFiniteNumber = (value: unknown, fallback = 0): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
+
+/**
+ * Chốt kiểu dữ liệu KPI trước khi truyền vào component.
+ * Backend thiếu trường / trả sai kiểu → thay bằng giá trị mặc định, không để `undefined` lên UI.
+ */
+function normalizeKpis(raw: unknown): DashboardKPIs {
+  const r = isRecord(raw) ? raw : {};
+  return {
+    total_videos: toFiniteNumber(r.total_videos),
+    total_plates_detected: toFiniteNumber(r.total_plates_detected),
+    unique_plates_count: toFiniteNumber(r.unique_plates_count),
+    avg_accuracy_pct: toFiniteNumber(r.avg_accuracy_pct),
+  };
+}
+
+/** Chỉ nhận mảng phần tử object — loại bỏ null/primitive làm sập lúc render. */
+function sanitizeArray<T>(raw: unknown): T[] {
+  return Array.isArray(raw) ? (raw.filter((item) => isRecord(item)) as T[]) : [];
+}
+
 export const alprApi = {
   // 1. Thống kê Dashboard KPI
   getKPIs: async (): Promise<DashboardKPIs> => {
-    if (isMockEnabled()) return MOCK_KPIS;
     try {
       const res = await apiClient.get<DashboardKPIs>("/analytics/kpis");
-      return res.data;
-    } catch {
-      return EMPTY_KPIS;
+      return normalizeKpis(res.data);
+    } catch (err) {
+      return failOrEmpty(err, EMPTY_KPIS);
     }
   },
 
   // 2. Danh sách tác vụ Video
   getJobs: async (): Promise<VideoJob[]> => {
-    if (isMockEnabled()) return MOCK_JOBS;
     try {
       const res = await apiClient.get<VideoJob[]>("/videos/jobs");
-      return res.data;
-    } catch {
-      return [];
+      return sanitizeArray<VideoJob>(res.data);
+    } catch (err) {
+      return failOrEmpty<VideoJob[]>(err, []);
     }
   },
 
@@ -115,31 +162,12 @@ export const alprApi = {
     file: File,
     onProgress?: (percent: number) => void,
     signal?: AbortSignal
-  ): Promise<{ job_id: string; job?: VideoJob; video_url?: string }> => {
-    const newJobId = `job-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-
-    if (isMockEnabled()) {
-      // Giả lập tiến trình upload trong mock mode
-      if (onProgress) {
-        onProgress(30);
-        await new Promise((r) => setTimeout(r, 200));
-        onProgress(70);
-        await new Promise((r) => setTimeout(r, 200));
-        onProgress(100);
-      }
-      return { job_id: newJobId };
-    }
-
+  ): Promise<{ job_id: string }> => {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await apiClient.post<{
-        job_id: string;
-        job?: VideoJob;
-        video_url?: string;
-      }>("/videos/upload", formData, {
+      const res = await apiClient.post<{ job_id: string }>("/videos/upload", formData, {
         headers: { "Content-Type": "multipart/form-data" },
-        timeout: 0,
         signal,
         onUploadProgress: (progressEvent) => {
           if (onProgress && progressEvent.total) {
@@ -155,14 +183,11 @@ export const alprApi = {
       }
       if (err.response?.status === 413) {
         throw new Error("Dung lượng tệp vượt quá giới hạn 1GB của máy chủ (413 Payload Too Large)");
-      }
-      if (err.response?.status === 422) {
+      } else if (err.response?.status === 422) {
         throw new Error("Định dạng tệp không được máy chủ hỗ trợ hoặc tệp video bị lỗi giải mã");
-      }
-      if (err.response?.status === 507) {
+      } else if (err.response?.status === 507) {
         throw new Error("Ổ đĩa lưu trữ máy chủ không đủ dung lượng xử lý");
-      }
-      if (err.code === "ECONNABORTED") {
+      } else if (err.code === "ECONNABORTED") {
         throw new Error("Hết thời gian chờ phản hồi từ máy chủ (Timeout)");
       }
       throw new Error(err.message || "Lỗi kết nối mạng khi tải lên video");
@@ -171,14 +196,34 @@ export const alprApi = {
 
   // 4. Lấy chi tiết tác vụ
   getJobById: async (jobId: string): Promise<VideoJob | undefined> => {
-    if (isMockEnabled()) {
-      return MOCK_JOBS.find((j) => j.id === jobId);
-    }
     try {
       const res = await apiClient.get<VideoJob>(`/videos/jobs/${jobId}`);
       return res.data;
-    } catch {
-      return undefined;
+    } catch (err) {
+      return failOrEmpty<VideoJob | undefined>(err, undefined);
+    }
+  },
+
+  // 4.1 Xóa một tác vụ video và toàn bộ dữ liệu biển số / tệp liên quan
+  deleteJob: async (jobId: string): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const res = await apiClient.delete<{ status: string; deleted: boolean }>(`/videos/jobs/${jobId}`);
+      return { success: res.data?.deleted ?? true };
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi xóa tác vụ video");
+    }
+  },
+
+  // 4.2 Xóa hàng loạt tác vụ video
+  deleteJobs: async (jobIds: string[]): Promise<{ deleted_count: number; requested_count: number }> => {
+    try {
+      const res = await apiClient.post<{ deleted_count: number; requested_count: number }>(
+        "/videos/jobs/delete",
+        { job_ids: jobIds }
+      );
+      return res.data;
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi xóa hàng loạt video");
     }
   },
 
@@ -188,44 +233,271 @@ export const alprApi = {
     vehicle_type?: string;
     job_id?: string;
   }): Promise<PlateRecord[]> => {
-    if (isMockEnabled()) {
-      let filtered = [...MOCK_PLATES];
-      if (params?.q) {
-        const query = params.q.toUpperCase().replace(/[-.]/g, "");
-        filtered = filtered.filter(
-          (p) =>
-            p.plate_number.includes(query) ||
-            p.plate_display.toUpperCase().includes(params.q!.toUpperCase())
-        );
-      }
-      if (params?.vehicle_type && params.vehicle_type !== "all") {
-        filtered = filtered.filter((p) => p.vehicle_type === params.vehicle_type);
-      }
-      if (params?.job_id) {
-        filtered = filtered.filter((p) => p.job_id === params.job_id);
-      }
-      return filtered;
-    }
     try {
       const res = await apiClient.get<PlateRecord[]>("/plates/records", { params });
+      return sanitizeArray<PlateRecord>(res.data);
+    } catch (err) {
+      return failOrEmpty<PlateRecord[]>(err, []);
+    }
+  },
+
+  // 5.1 Xóa một bản ghi biển số xe theo ID
+  deletePlate: async (plateId: string): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const res = await apiClient.delete<{ status: string; deleted: boolean }>(`/plates/records/${plateId}`);
+      return { success: res.data?.deleted ?? true };
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi xóa biển số xe");
+    }
+  },
+
+  // 5.2 Xóa hàng loạt bản ghi biển số xe theo danh sách ID
+  deletePlates: async (plateIds: string[]): Promise<{ deleted_count: number; requested_count: number }> => {
+    try {
+      const res = await apiClient.post<{ deleted_count: number; requested_count: number }>(
+        "/plates/records/delete",
+        { plate_ids: plateIds }
+      );
       return res.data;
-    } catch {
-      return [];
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi xóa hàng loạt biển số xe");
+    }
+  },
+
+  // 5.3 Bắn thử nghiệm sự kiện nhận diện biển số thời gian thực (Live simulation & animation test)
+  simulatePlate: async (): Promise<{ status: string; plate: PlateRecord }> => {
+    try {
+      const res = await apiClient.post<{ status: string; plate: PlateRecord }>("/plates/simulate");
+      return res.data;
+    } catch (err: any) {
+      throw new Error(err.response?.data?.detail || err.message || "Lỗi khi kích hoạt nhận diện thử nghiệm");
     }
   },
 
   // 6. Truy vết biển số xe (Plate Trace)
   tracePlate: async (plateNumber: string): Promise<PlateTraceSummary[]> => {
-    if (isMockEnabled()) {
-      return getPlateTrace(plateNumber);
-    }
     try {
       const res = await apiClient.get<PlateTraceSummary[]>("/plates/trace", {
         params: { plate: plateNumber },
       });
+      return sanitizeArray<PlateTraceSummary>(res.data);
+    } catch (err) {
+      return failOrEmpty<PlateTraceSummary[]>(err, []);
+    }
+  },
+
+  // 7. Thống kê bãi xe chung cư
+  getParkingStats: async (): Promise<ParkingDashboardStats | undefined> => {
+    try {
+      const res = await apiClient.get<ParkingDashboardStats>("/parking/stats");
       return res.data;
-    } catch {
-      return [];
+    } catch (err) {
+      return failOrEmpty<ParkingDashboardStats | undefined>(err, undefined);
+    }
+  },
+
+  // 8. Lấy danh sách lượt xe vào/ra bãi chung cư
+  getParkingSessions: async (params?: {
+    status?: string;
+    plate?: string;
+    ticket_type?: string;
+    apartment?: string;
+    limit?: number;
+  }): Promise<ParkingSession[]> => {
+    try {
+      const res = await apiClient.get<ParkingSession[]>("/parking/sessions", { params });
+      return sanitizeArray<ParkingSession>(res.data);
+    } catch (err) {
+      return failOrEmpty<ParkingSession[]>(err, []);
+    }
+  },
+
+  // 9. Lấy chi tiết phiên gửi xe (ảnh vào vs ảnh ra)
+  getParkingSessionById: async (sessionId: string): Promise<ParkingSession | undefined> => {
+    try {
+      const res = await apiClient.get<ParkingSession>(`/parking/sessions/${sessionId}`);
+      return res.data;
+    } catch (err) {
+      return failOrEmpty<ParkingSession | undefined>(err, undefined);
+    }
+  },
+
+  // 10. Ghi nhận xe vào bãi (Check-in trigger hoặc nhập biển)
+  checkInVehicle: async (payload: {
+    camera_id?: string;
+    plate_number?: string;
+    vehicle_type?: string;
+    notes?: string;
+  }): Promise<{ status: string; message: string; data: ParkingSession }> => {
+    const res = await apiClient.post("/parking/check-in", payload);
+    return res.data;
+  },
+
+  // 11. Ghi nhận xe vào bãi kèm chụp/tải ảnh
+  checkInVehicleWithImage: async (formData: FormData): Promise<{ status: string; message: string; data: ParkingSession }> => {
+    const res = await apiClient.post("/parking/check-in/upload", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return res.data;
+  },
+
+  // 12. Ghi nhận xe ra bãi (Check-out trigger hoặc đối soát biển)
+  checkOutVehicle: async (payload: {
+    camera_id?: string;
+    plate_number?: string;
+    session_id?: string;
+    notes?: string;
+  }): Promise<{ status: string; message: string; data: ParkingSession }> => {
+    const res = await apiClient.post("/parking/check-out", payload);
+    return res.data;
+  },
+
+  // 13. Ghi nhận xe ra bãi kèm chụp/tải ảnh
+  checkOutVehicleWithImage: async (formData: FormData): Promise<{ status: string; message: string; data: ParkingSession }> => {
+    const res = await apiClient.post("/parking/check-out/upload", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return res.data;
+  },
+
+  // 14. Danh sách Camera làn xe
+  getParkingCameras: async (): Promise<ParkingCamera[]> => {
+    try {
+      const res = await apiClient.get<ParkingCamera[]>("/parking/cameras");
+      return sanitizeArray<ParkingCamera>(res.data);
+    } catch (err) {
+      return failOrEmpty<ParkingCamera[]>(err, []);
+    }
+  },
+
+  // 15. Thêm mới / cập nhật Camera (RTSP hoặc Webcam)
+  createOrUpdateCamera: async (payload: CameraInput): Promise<ParkingCamera> => {
+    const res = await apiClient.post<ParkingCamera>("/parking/cameras", payload);
+    return res.data;
+  },
+
+  // 16. Xóa cấu hình Camera
+  deleteCamera: async (cameraId: string): Promise<{ status: string; message: string }> => {
+    const res = await apiClient.delete<{ status: string; message: string }>(
+      `/parking/cameras/${encodeURIComponent(cameraId)}`
+    );
+    return res.data;
+  },
+
+  // 17. Kiểm tra tín hiệu kết nối thực tế tới Camera
+  testCameraConnection: async (cameraId: string): Promise<CameraConnectionTest> => {
+    const res = await apiClient.post<CameraConnectionTest>(
+      `/parking/cameras/${encodeURIComponent(cameraId)}/test`
+    );
+    return res.data;
+  },
+
+  // 18. Danh sách xe cư dân đăng ký
+  getResidents: async (params?: { q?: string; apartment?: string; status?: string }): Promise<ResidentVehicle[]> => {
+    try {
+      const res = await apiClient.get<ResidentVehicle[]>("/parking/residents", { params });
+      return sanitizeArray<ResidentVehicle>(res.data);
+    } catch (err) {
+      return failOrEmpty<ResidentVehicle[]>(err, []);
+    }
+  },
+
+  // 19. Đăng ký mới hoặc cập nhật xe cư dân
+  registerResident: async (payload: Partial<ResidentVehicle>): Promise<ResidentVehicle> => {
+    const res = await apiClient.post<ResidentVehicle>("/parking/residents", payload);
+    return res.data;
+  },
+
+  // 20. Xóa xe cư dân khỏi hệ thống
+  deleteResident: async (residentId: string): Promise<{ status: string; message: string }> => {
+    const res = await apiClient.delete<{ status: string; message: string }>(
+      `/parking/residents/${encodeURIComponent(residentId)}`
+    );
+    return res.data;
+  },
+
+  // 21. Lấy trạng thái mô hình AI và tiến trình huấn luyện
+  getTrainingStatus: async (): Promise<TrainingStatusResponse> => {
+    const res = await apiClient.get<TrainingStatusResponse>("/training/status");
+    return res.data;
+  },
+
+  // 22. Khởi chạy huấn luyện mô hình YOLO phát hiện biển số xe
+  startTraining: async (payload: TrainRequestInput): Promise<{ status: string; message: string; config: any }> => {
+    const res = await apiClient.post("/training/start", payload);
+    return res.data;
+  },
+
+  // 23. Chuẩn bị dataset Kaggle sang YOLO format
+  prepareDataset: async (valRatio: number = 0.2): Promise<PrepareDatasetResponse> => {
+    const res = await apiClient.post<PrepareDatasetResponse>("/training/prepare-dataset", null, {
+      params: { val_ratio: valRatio },
+    });
+    return res.data;
+  },
+
+  // 24. Lấy chỉ số đánh giá mô hình (mAP50, Precision, Recall, FPS)
+  getTrainingMetrics: async (): Promise<TrainingMetrics | undefined> => {
+    try {
+      const res = await apiClient.get<TrainingMetrics>("/training/metrics");
+      return res.data;
+    } catch (err) {
+      return undefined;
+    }
+  },
+
+  // 25. Lấy cấu hình hệ thống (bãi xe, AI, an ninh, lưu trữ, tòa nhà)
+  getSettings: async (): Promise<SystemSettings> => {
+    const res = await apiClient.get<SystemSettings>("/settings");
+    return res.data;
+  },
+
+  // 26. Lưu cấu hình hệ thống
+  updateSettings: async (settings: SystemSettings): Promise<SystemSettings> => {
+    const res = await apiClient.put<SystemSettings>("/settings", settings);
+    return res.data;
+  },
+
+  // 27. Lấy dung lượng các thư mục media và ổ đĩa
+  getStorageUsage: async (): Promise<StorageUsage> => {
+    const res = await apiClient.get<StorageUsage>("/settings/storage");
+    return res.data;
+  },
+
+  // 28. Dọn dẹp file cũ theo thời hạn lưu trữ
+  cleanupStorage: async (settings?: SystemSettings): Promise<CleanupResult> => {
+    const res = await apiClient.post<CleanupResult>("/settings/cleanup", settings ?? null);
+    return res.data;
+  },
+
+  // 29. Kiểm tra trạng thái database
+  getDatabaseStatus: async (): Promise<DatabaseStatus> => {
+    const res = await apiClient.get<DatabaseStatus>("/settings/database/status");
+    return res.data;
+  },
+
+  // 30. Tải file backup .sql của database
+  downloadDatabaseBackup: async (): Promise<Blob> => {
+    try {
+      const res = await apiClient.get("/settings/database/backup", {
+        responseType: "blob",
+        timeout: 120000,
+      });
+      return res.data as Blob;
+    } catch (err) {
+      // Lỗi từ backend khi responseType=blob trả về Blob JSON, cần đọc để lấy detail.
+      const error = err as AxiosError;
+      let message = error.message || "Sao lưu database thất bại.";
+      const data = error.response?.data as unknown;
+      if (data instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await data.text());
+          if (parsed?.detail) message = String(parsed.detail);
+        } catch {
+          // Giữ nguyên thông báo gốc nếu không đọc được blob.
+        }
+      }
+      throw new Error(message);
     }
   },
 };

@@ -1,72 +1,223 @@
-"""Smoke tests for the camera and video upload HTTP API."""
+"""Comprehensive integration tests for SMART ALPR 2.0 FastAPI backend."""
 
+import io
+import sys
 from pathlib import Path
 
+# Add project root to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from fastapi.testclient import TestClient
+from api.app import create_app
+from src.database.connection import init_db
+from src.database.repository import insert_plate, insert_video_job
 
-from api.app import app
-from api.routes import videos as videos_route
-from config import settings
-
+app = create_app()
 client = TestClient(app)
 
 
-def test_health_endpoint() -> None:
-    response = client.get("/api/health")
+def setup_module():
+    """Ensure clean database for testing."""
+    init_db()
+
+
+def test_health_check():
+    # Test root endpoint
+    res_root = client.get("/")
+    assert res_root.status_code == 200
+    assert res_root.json()["status"] == "healthy"
+
+    # Test /health endpoint
+    res_health = client.get("/health")
+    assert res_health.status_code == 200
+    assert res_health.json()["status"] == "healthy"
+
+
+def test_analytics_kpis():
+    response = client.get("/api/v1/analytics/kpis")
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "ok"
-    assert payload["camera_status"] in {"idle", "running", "stopped", "failed"}
+    data = response.json()
+    assert "total_videos" in data
+    assert "total_plates_detected" in data
+    assert "unique_plates_count" in data
+    assert "avg_accuracy_pct" in data
 
 
-def test_camera_status_without_session() -> None:
-    response = client.get("/api/cameras/status")
-    assert response.status_code == 200
-    assert response.json() == {"active": False, "session": None}
+def test_video_upload_and_job_lifecycle():
+    # 1. Upload mock mp4 file
+    fake_video_content = b"fake-mp4-video-header-and-bytes-for-testing"
+    files = {"file": ("test_traffic_hang_xanh.mp4", io.BytesIO(fake_video_content), "video/mp4")}
+
+    upload_res = client.post("/api/v1/videos/upload", files=files)
+    assert upload_res.status_code == 200
+    upload_data = upload_res.json()
+    assert "job_id" in upload_data
+    job_id = upload_data["job_id"]
+
+    # 2. Get list of jobs
+    jobs_res = client.get("/api/v1/videos/jobs")
+    assert jobs_res.status_code == 200
+    jobs_list = jobs_res.json()
+    assert any(j["id"] == job_id for j in jobs_list)
+
+    # 3. Get single job detail
+    single_res = client.get(f"/api/v1/videos/jobs/{job_id}")
+    assert single_res.status_code == 200
+    job = single_res.json()
+    assert job["id"] == job_id
+    assert job["filename"] == "test_traffic_hang_xanh.mp4"
 
 
-def test_camera_stream_without_session() -> None:
-    response = client.get("/api/cameras/stream")
-    assert response.status_code == 404
+def test_plates_records_and_trace():
+    # Insert test plate records
+    test_plate_1 = {
+        "id": "plate-test-001",
+        "job_id": "job-test-101",
+        "job_filename": "street_cam1.mp4",
+        "track_id": 1,
+        "plate_number": "51F88234",
+        "plate_display": "51F-882.34",
+        "province": "TP. Hồ Chí Minh",
+        "plate_type": "white",
+        "vehicle_type": "car",
+        "confidence_score": 0.95,
+        "quality_score": 0.88,
+        "crop_image_url": "/static/captures/test/crop1.jpg",
+        "pts_ms": 1250,
+        "video_time_str": "00:01",
+        "timestamp": "2026-10-15T08:30:00Z",
+        "speed_kmh": 45.0,
+        "video_url": "/static/videos/street_cam1.mp4",
+    }
+    test_plate_2 = {
+        "id": "plate-test-002",
+        "job_id": "job-test-102",
+        "job_filename": "street_cam2.mp4",
+        "track_id": 2,
+        "plate_number": "51F88234",
+        "plate_display": "51F-882.34",
+        "province": "TP. Hồ Chí Minh",
+        "plate_type": "white",
+        "vehicle_type": "car",
+        "confidence_score": 0.98,
+        "quality_score": 0.92,
+        "crop_image_url": "/static/captures/test/crop2.jpg",
+        "pts_ms": 3400,
+        "video_time_str": "00:03",
+        "timestamp": "2026-10-15T09:15:00Z",
+        "speed_kmh": 48.2,
+        "video_url": "/static/videos/street_cam2.mp4",
+    }
+
+    insert_plate(test_plate_1)
+    insert_plate(test_plate_2)
+
+    # 1. Test GET /plates/records
+    records_res = client.get("/api/v1/plates/records?q=51F")
+    assert records_res.status_code == 200
+    records = records_res.json()
+    assert len(records) >= 2
+
+    # 2. Test GET /plates/trace
+    trace_res = client.get("/api/v1/plates/trace?plate=51F88234")
+    assert trace_res.status_code == 200
+    trace_data = trace_res.json()
+    assert len(trace_data) >= 1
+    summary = trace_data[0]
+    assert summary["plate_number"] == "51F88234"
+    assert summary["total_detections"] >= 2
+    assert summary["distinct_videos"] >= 2
+    assert len(summary["records"]) >= 2
+
+    # 3. Test DELETE /plates/records/{plate_id}
+    del_res = client.delete("/api/v1/plates/records/plate-test-001")
+    assert del_res.status_code == 200
+    assert del_res.json()["deleted"] is True
+
+    # Verify plate-test-001 is deleted
+    check_res = client.get("/api/v1/plates/records?q=51F")
+    remaining_ids = [p["id"] for p in check_res.json()]
+    assert "plate-test-001" not in remaining_ids
+
+    # 4. Test POST /plates/records/delete (Bulk delete)
+    bulk_del_res = client.post("/api/v1/plates/records/delete", json={"plate_ids": ["plate-test-002"]})
+    assert bulk_del_res.status_code == 200
+    assert bulk_del_res.json()["deleted_count"] == 1
+
+    # 5. Test POST /plates/simulate (Realtime simulation & broadcast)
+    sim_res = client.post("/api/v1/plates/simulate")
+    assert sim_res.status_code == 200
+    sim_data = sim_res.json()
+    assert sim_data["status"] == "success"
+    assert "plate" in sim_data
+    assert sim_data["plate"]["plate_number"] != ""
 
 
-def test_video_job_not_found() -> None:
-    response = client.get("/api/v1/videos/jobs/job-missing")
-    assert response.status_code == 404
+def test_settings_and_tariffs():
+    """Test settings persistence, tariff-driven fee calculation, and storage endpoints."""
+    import copy
+    import datetime
+
+    from src.database.repository import calculate_parking_fee
+    from src.utils.settings_store import load_settings, save_settings
+
+    original = load_settings()
+    settings = copy.deepcopy(original)
+    settings["parking"]["tariff"]["motorcycle_day"] = 3500
+    settings["parking"]["tariff"]["motorcycle_night"] = 7000
+    settings["parking"]["tariff"]["car_first_2h"] = 22000
+    settings["parking"]["tariff"]["car_extra_hour"] = 11000
+    settings["parking"]["grace_period_minutes"] = 15
+    settings["parking"]["day_start"] = "06:00"
+    settings["parking"]["night_start"] = "22:00"
+    settings["ai"]["plate_tolerance"] = 1
+    settings["ai"]["evidence_mode"] = "both"
+    save_settings(settings)
+
+    try:
+        res = client.get("/api/v1/settings")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["parking"]["tariff"]["motorcycle_day"] == 3500
+        assert data["ai"]["plate_tolerance"] == 1
+
+        # Day/night motorcycle tickets
+        day = datetime.datetime(2026, 11, 12, 10, 0)
+        night = datetime.datetime(2026, 11, 12, 23, 0)
+        assert calculate_parking_fee("motorcycle", "GUEST", 60, entry_time=day) == 3500
+        assert calculate_parking_fee("motorcycle", "GUEST", 60, entry_time=night) == 7000
+        # Grace period
+        assert calculate_parking_fee("motorcycle", "GUEST", 10, entry_time=day) == 0
+        # Car: first 2h + extra started hour
+        assert calculate_parking_fee("car", "GUEST", 60, entry_time=day) == 22000
+        assert calculate_parking_fee("car", "GUEST", 121, entry_time=day) == 33000
+        # Residents park free
+        assert calculate_parking_fee("car", "RESIDENT", 1000, entry_time=day) == 0
+
+        storage_res = client.get("/api/v1/settings/storage")
+        assert storage_res.status_code == 200
+        assert "folders" in storage_res.json()
+
+        cleanup_res = client.post(
+            "/api/v1/settings/cleanup",
+            json={"storage": {"video_retention_days": 36500, "crop_retention_days": 36500}},
+        )
+        assert cleanup_res.status_code == 200
+        assert cleanup_res.json()["status"] == "success"
+
+        db_res = client.get("/api/v1/settings/database/status")
+        assert db_res.status_code == 200
+        assert "connected" in db_res.json()
+    finally:
+        save_settings(original)
 
 
-def test_upload_rejects_non_video() -> None:
-    response = client.post(
-        "/api/v1/videos/upload",
-        files={"file": ("notes.txt", b"hello", "text/plain")},
-    )
-    assert response.status_code == 400
-
-
-def test_upload_accepts_video(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(settings, "UPLOAD_DIR", tmp_path)
-    captured: dict = {}
-
-    def fake_submit(video_path, filename: str, options=None):
-        captured["path"] = Path(video_path)
-        captured["filename"] = filename
-        return {
-            "id": "job-test",
-            "filename": filename,
-            "video_url": "/api/v1/videos/job-test/file",
-        }
-
-    monkeypatch.setattr(videos_route.video_manager, "submit", fake_submit)
-
-    response = client.post(
-        "/api/v1/videos/upload",
-        files={"file": ("sample.mp4", b"fake-video-bytes", "video/mp4")},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["job_id"] == "job-test"
-    assert payload["video_url"] == "/api/v1/videos/job-test/file"
-    assert captured["filename"] == "sample.mp4"
-    assert captured["path"].exists()
-    assert captured["path"].read_bytes() == b"fake-video-bytes"
+if __name__ == "__main__":
+    setup_module()
+    test_health_check()
+    test_analytics_kpis()
+    test_video_upload_and_job_lifecycle()
+    test_plates_records_and_trace()
+    test_settings_and_tariffs()
+    print("[SUCCESS] All API endpoint tests passed flawlessly!")

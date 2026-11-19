@@ -68,6 +68,78 @@ SCHEMA = (
             ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
+    """
+    CREATE TABLE IF NOT EXISTS `cameras` (
+        `id` VARCHAR(64) NOT NULL,
+        `name` VARCHAR(255) NOT NULL,
+        `camera_type` VARCHAR(32) NOT NULL DEFAULT 'ENTRY',
+        `rtsp_url` VARCHAR(512) NOT NULL,
+        `location` VARCHAR(255) NULL,
+        `resolution` VARCHAR(32) DEFAULT '1920x1080',
+        `fps_limit` INT DEFAULT 25,
+        `is_active` TINYINT(1) DEFAULT 1,
+        `last_heartbeat` VARCHAR(64) NULL,
+        `created_at` VARCHAR(64) NULL,
+        `updated_at` VARCHAR(64) NULL,
+        PRIMARY KEY (`id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS `resident_vehicles` (
+        `id` VARCHAR(64) NOT NULL,
+        `plate_number` VARCHAR(32) NOT NULL UNIQUE,
+        `plate_display` VARCHAR(32) NOT NULL,
+        `owner_name` VARCHAR(128) NOT NULL,
+        `apartment_number` VARCHAR(64) NOT NULL,
+        `phone_number` VARCHAR(32) DEFAULT '',
+        `vehicle_type` VARCHAR(32) DEFAULT 'car',
+        `rfid_card_id` VARCHAR(64) NULL,
+        `monthly_fee` INT DEFAULT 1200000,
+        `registered_at` VARCHAR(64) NULL,
+        `expiry_date` VARCHAR(64) NULL,
+        `status` VARCHAR(32) DEFAULT 'ACTIVE',
+        `notes` TEXT NULL,
+        `created_at` VARCHAR(64) NULL,
+        `updated_at` VARCHAR(64) NULL,
+        PRIMARY KEY (`id`),
+        INDEX `idx_resident_plate` (`plate_number`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS `parking_sessions` (
+        `id` VARCHAR(64) NOT NULL,
+        `plate_number` VARCHAR(32) NOT NULL,
+        `plate_display` VARCHAR(32) NOT NULL,
+        `vehicle_type` VARCHAR(32) DEFAULT 'car',
+        `ticket_type` VARCHAR(32) DEFAULT 'GUEST',
+        `status` VARCHAR(32) NOT NULL DEFAULT 'PARKED',
+        `entry_time` VARCHAR(64) NOT NULL,
+        `entry_camera_id` VARCHAR(64) NULL,
+        `entry_gate_name` VARCHAR(128) NULL,
+        `entry_snapshot_url` VARCHAR(512) NOT NULL,
+        `entry_plate_crop_url` VARCHAR(512) NULL,
+        `entry_confidence` DOUBLE DEFAULT 0.95,
+        `exit_time` VARCHAR(64) NULL,
+        `exit_camera_id` VARCHAR(64) NULL,
+        `exit_gate_name` VARCHAR(128) NULL,
+        `exit_snapshot_url` VARCHAR(512) NULL,
+        `exit_plate_crop_url` VARCHAR(512) NULL,
+        `exit_plate_number` VARCHAR(32) NULL,
+        `is_plate_matched` TINYINT(1) NULL,
+        `resident_id` VARCHAR(64) NULL,
+        `apartment_number` VARCHAR(64) NULL,
+        `resident_name` VARCHAR(128) NULL,
+        `duration_minutes` INT DEFAULT 0,
+        `parking_fee` INT DEFAULT 0,
+        `payment_status` VARCHAR(32) DEFAULT 'UNPAID',
+        `notes` TEXT NULL,
+        `created_at` VARCHAR(64) NULL,
+        `updated_at` VARCHAR(64) NULL,
+        PRIMARY KEY (`id`),
+        INDEX `idx_parking_sessions_status` (`status`),
+        INDEX `idx_parking_sessions_plate` (`plate_number`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
 )
 
 
@@ -142,6 +214,53 @@ def connection(database: Optional[str] = None) -> Iterator[Any]:
         conn.close()
 
 
+def check_db_status(database: Optional[str] = None) -> dict[str, Any]:
+    """Inspect database connectivity, engine version, and table record counts."""
+    name = _validate_database_name(database or MYSQL_DATABASE)
+    try:
+        conn = _connect(database=name)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT VERSION() AS ver")
+                row = cursor.fetchone()
+                version = row.get("ver", "MySQL") if row else "MySQL"
+
+                cursor.execute(
+                    """
+                    SELECT table_name, table_rows
+                    FROM information_schema.tables
+                    WHERE table_schema = %s
+                    """,
+                    (name,),
+                )
+                tables = {r["TABLE_NAME"] if "TABLE_NAME" in r else r.get("table_name", ""): int(r.get("TABLE_ROWS") or r.get("table_rows") or 0) for r in cursor.fetchall()}
+                total_records = sum(tables.values())
+
+            return {
+                "status": "connected",
+                "connected": True,
+                "engine": "MySQL",
+                "server_version": str(version),
+                "database": name,
+                "tables": tables,
+                "total_records": total_records,
+                "message": "Kết nối cơ sở dữ liệu MySQL thành công",
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        return {
+            "status": "error",
+            "connected": False,
+            "engine": "MySQL",
+            "server_version": "N/A",
+            "database": name,
+            "tables": {},
+            "total_records": 0,
+            "message": f"Không thể kết nối MySQL: {exc}",
+        }
+
+
 def init_db(database: Optional[str] = None) -> None:
     """Create the database, tables and indexes if they do not exist."""
     name = _validate_database_name(database or MYSQL_DATABASE)
@@ -158,3 +277,50 @@ def init_db(database: Optional[str] = None) -> None:
         raise
     finally:
         conn.close()
+
+
+def check_db_status(database: Optional[str] = None) -> dict[str, Any]:
+    """Inspect database connectivity, engine version, and table record counts."""
+    name = _validate_database_name(database or MYSQL_DATABASE)
+    try:
+        conn = _connect(database=name)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT VERSION() AS ver")
+                row = cursor.fetchone()
+                version = row.get("ver", "MySQL") if row else "MySQL"
+
+                cursor.execute(
+                    """
+                    SELECT table_name, table_rows
+                    FROM information_schema.tables
+                    WHERE table_schema = %s
+                    """,
+                    (name,),
+                )
+                tables = {r["TABLE_NAME"] if "TABLE_NAME" in r else r.get("table_name", ""): int(r.get("TABLE_ROWS") or r.get("table_rows") or 0) for r in cursor.fetchall()}
+                total_records = sum(tables.values())
+
+            return {
+                "status": "connected",
+                "connected": True,
+                "engine": "MySQL",
+                "server_version": str(version),
+                "database": name,
+                "tables": tables,
+                "total_records": total_records,
+                "message": "Kết nối cơ sở dữ liệu MySQL thành công",
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        return {
+            "status": "error",
+            "connected": False,
+            "engine": "MySQL",
+            "server_version": "N/A",
+            "database": name,
+            "tables": {},
+            "total_records": 0,
+            "message": f"Không thể kết nối MySQL: {exc}",
+        }

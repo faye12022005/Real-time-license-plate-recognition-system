@@ -255,13 +255,15 @@ class PlateOCR:
 
     def __init__(
         self,
-        char_model_path: str | Path,
+        char_model_path: Optional[str | Path] = None,
         mode: str = "hybrid",
         gpu: bool = False,
         char_confidence: float = CHAR_CONFIDENCE,
         imgsz: int = 640,
         device: Optional[str] = None,
     ) -> None:
+        from config import settings
+        char_model_path = char_model_path or settings.CHAR_MODEL_PATH
         self.mode = mode
         self.char_ocr: Optional[CharDetectorOCR] = None
         self.easy_ocr: Optional[EasyOCRReader] = None
@@ -479,3 +481,7 @@ class PlateOCR:
             raw_text=easy_result.raw_text,
             letters=letters,
         )
+
+
+# Compatibility alias
+RapidOCR = PlateOCR

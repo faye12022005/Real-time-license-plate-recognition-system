@@ -5,19 +5,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
-  Camera,
   UploadCloud,
+  Camera,
   Database,
   SearchCode,
   ShieldCheck,
   Cpu,
   ChevronRight,
-  Sparkles,
-  ToggleLeft,
-  ToggleRight,
   AlertTriangle,
+  Car,
+  Building2,
+  Brain,
+  SlidersHorizontal,
 } from "lucide-react";
-import { isMockEnabled, setMockEnabled, apiClient } from "@/lib/api";
+import { apiClient } from "@/lib/api";
 
 const NAV_ITEMS = [
   {
@@ -33,10 +34,22 @@ const NAV_ITEMS = [
     badge: "AI 2.0",
   },
   {
-    name: "Biển số",
-    href: "/plates",
-    icon: Database,
+    name: "Quản lý Bãi xe",
+    href: "/parking",
+    icon: Car,
+    badge: "Smart",
+  },
+  {
+    name: "Xe Cư dân",
+    href: "/residents",
+    icon: Building2,
     badge: null,
+  },
+  {
+    name: "Camera trực tiếp",
+    href: "/camera",
+    icon: Camera,
+    badge: "Live",
   },
   {
     name: "Truy vết Biển số",
@@ -45,42 +58,48 @@ const NAV_ITEMS = [
     badge: "Forensic",
   },
   {
-    name: "Camera trực tiếp",
-    href: "/camera",
-    icon: Camera,
-    badge: "Live",
+    name: "Cấu hình hệ thống",
+    href: "/settings",
+    icon: SlidersHorizontal,
+    badge: null,
   },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [mockActive, setMockActive] = useState<boolean>(false);
-  const [engineStatus, setEngineStatus] = useState<"mock" | "online" | "offline">("online");
+  const [engineStatus, setEngineStatus] = useState<"online" | "offline">("online");
+  const [buildingName, setBuildingName] = useState("Chung cư Sunrise City - Tháp A");
 
   useEffect(() => {
-    const isMock = isMockEnabled();
-    setMockActive(isMock);
-    if (isMock) {
-      setEngineStatus("mock");
-    } else {
-      // Kiểm tra tín hiệu thực tế từ Backend FastAPI
-      apiClient
-        .get("/health")
-        .then(() => setEngineStatus("online"))
-        .catch(() => setEngineStatus("offline"));
+    let cancelled = false;
 
-      const handleApiError = () => setEngineStatus("offline");
-      window.addEventListener("alpr_api_error", handleApiError);
-      return () => window.removeEventListener("alpr_api_error", handleApiError);
-    }
+    // Kiểm tra tín hiệu thực tế từ Backend FastAPI
+    apiClient
+      .get("/analytics/kpis")
+      .then(() => {
+        if (!cancelled) setEngineStatus("online");
+      })
+      .catch(() => {
+        if (!cancelled) setEngineStatus("offline");
+      });
+
+    // Hiển thị tên tòa nhà theo cấu hình hệ thống
+    apiClient
+      .get<{ building?: { name?: string } }>("/settings")
+      .then((res) => {
+        const name = res.data?.building?.name?.trim();
+        if (!cancelled && name) setBuildingName(name);
+      })
+      .catch(() => {});
+
+    const handleApiError = () => setEngineStatus("offline");
+    window.addEventListener("alpr_api_error", handleApiError);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("alpr_api_error", handleApiError);
+    };
   }, []);
-
-  const handleToggleMock = () => {
-    const nextState = !mockActive;
-    setMockActive(nextState);
-    setMockEnabled(nextState);
-    window.location.reload();
-  };
 
   return (
     <aside className="w-64 bg-surface border-r border-border h-screen flex flex-col justify-between shrink-0 sticky top-0 z-30 select-none">
@@ -100,7 +119,9 @@ export function Sidebar() {
                   2.0
                 </span>
               </div>
-              <p className="text-[11px] text-content-muted font-medium">Bento AI Intelligence</p>
+              <p className="max-w-[172px] truncate text-[11px] text-content-muted font-medium" title={buildingName}>
+                {buildingName}
+              </p>
             </div>
           </Link>
         </div>
@@ -120,28 +141,25 @@ export function Sidebar() {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                    isActive
+                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all ${isActive
                       ? "bg-primary-light text-primary border border-primary-border shadow-xs"
                       : "text-content-secondary hover:text-content-primary hover:bg-surface-muted"
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center gap-3">
                     <Icon
-                      className={`w-4 h-4 transition-colors ${
-                        isActive ? "text-primary" : "text-content-muted group-hover:text-content-primary"
-                      }`}
+                      className={`w-4 h-4 transition-colors ${isActive ? "text-primary" : "text-content-muted group-hover:text-content-primary"
+                        }`}
                     />
                     <span>{item.name}</span>
                   </div>
 
                   {item.badge && (
                     <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        isActive
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isActive
                           ? "bg-primary text-white"
                           : "bg-surface-muted text-content-secondary border border-border"
-                      }`}
+                        }`}
                     >
                       {item.badge}
                     </span>
@@ -153,67 +171,28 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Bottom: Data Switcher, System Status & User Profile */}
+      {/* Bottom: System Status & User Profile */}
       <div className="p-4 border-t border-border/80 space-y-3 bg-surface">
-        {/* Chế độ Dữ liệu (Mock Data vs Giao diện Trống) */}
-        <div className="p-2.5 rounded-xl bg-surface-muted border border-border space-y-1.5">
-          <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-content-muted">
-            <span>Chế độ Xem</span>
-            <span
-              className={`px-1.5 py-0.5 rounded font-mono text-[9px] font-bold ${
-                mockActive
-                  ? "bg-blue-100 text-primary border border-blue-200"
-                  : "bg-slate-200 text-slate-700"
-              }`}
-            >
-              {mockActive ? "DỮ LIỆU MẪU" : "TRỐNG (MẶC ĐỊNH)"}
-            </span>
-          </div>
-
-          <button
-            onClick={handleToggleMock}
-            className="w-full py-1.5 px-2 bg-white hover:bg-slate-50 border border-border rounded-lg text-[11px] font-semibold text-content-primary flex items-center justify-center gap-1.5 transition-all shadow-2xs hover:border-primary/50"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-primary" />
-            <span>
-              {mockActive ? "Chuyển về Giao diện Trống" : "Xem trước Dữ liệu Mẫu"}
-            </span>
-          </button>
-        </div>
-
         {/* System Health Card (Trạng thái động thực tế) */}
         <div className="p-3 rounded-xl bg-surface-muted border border-border flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div
-              className={`w-2.5 h-2.5 rounded-full ${
-                engineStatus === "online"
+              className={`w-2.5 h-2.5 rounded-full ${engineStatus === "online"
                   ? "bg-status-success animate-tech-pulse"
-                  : engineStatus === "mock"
-                  ? "bg-primary animate-pulse"
                   : "bg-status-error"
-              }`}
+                }`}
             />
             <div>
               <p className="text-[11px] font-bold text-content-primary">
-                {engineStatus === "online"
-                  ? "AI Engine Online"
-                  : engineStatus === "mock"
-                  ? "Chế độ Mock Data"
-                  : "Backend Mất kết nối"}
+                {engineStatus === "online" ? "AI Engine Online" : "Backend Mất kết nối"}
               </p>
               <p className="text-[10px] text-content-muted">
-                {engineStatus === "online"
-                  ? "FastAPI Hub Connected"
-                  : engineStatus === "mock"
-                  ? "Mô phỏng độc lập"
-                  : "Cổng 8000 không phản hồi"}
+                {engineStatus === "online" ? "FastAPI Hub Connected" : "Cổng 8000 không phản hồi"}
               </p>
             </div>
           </div>
           {engineStatus === "online" ? (
             <ShieldCheck className="w-4 h-4 text-status-success" />
-          ) : engineStatus === "mock" ? (
-            <Sparkles className="w-4 h-4 text-primary" />
           ) : (
             <AlertTriangle className="w-4 h-4 text-status-error" />
           )}

@@ -2,7 +2,8 @@
 
 import React, { useState } from "react";
 import Image from "next/image";
-import { CameraOff, Scan } from "lucide-react";
+import { Scan } from "lucide-react";
+import { resolveMediaUrl } from "@/lib/media";
 
 interface SafePlateImageProps {
   src?: string;
@@ -20,9 +21,10 @@ export function SafePlateImage({
   fill = true,
 }: SafePlateImageProps) {
   const [hasError, setHasError] = useState(false);
+  const resolvedSrc = resolveMediaUrl(src);
 
   // Khi không có ảnh hoặc ảnh bị 404/lỗi tải: hiển thị Fallback Placeholder công nghệ
-  if (!src || hasError) {
+  if (!resolvedSrc || hasError) {
     return (
       <div className="w-full h-full bg-slate-900 text-slate-400 flex flex-col items-center justify-center p-1.5 select-none text-center">
         <Scan className="w-4 h-4 text-slate-500 mb-0.5 opacity-70" />
@@ -35,7 +37,7 @@ export function SafePlateImage({
 
   return (
     <Image
-      src={src}
+      src={resolvedSrc}
       alt={alt}
       fill={fill}
       unoptimized

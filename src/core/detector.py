@@ -24,7 +24,12 @@ class YoloDetector:
         iou: float = 0.5,
         imgsz: int = 640,
         device: Optional[str] = None,
+        **kwargs,
     ) -> None:
+        if "conf_thresh" in kwargs:
+            confidence = kwargs["conf_thresh"]
+        if "iou_thresh" in kwargs:
+            iou = kwargs["iou_thresh"]
         self.model_path = Path(model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(
@@ -103,6 +108,15 @@ class YoloDetector:
 
 class PlateDetector(YoloDetector):
     """Detector trained on the single `license_plate` class."""
+
+    def __init__(
+        self,
+        model_path: Optional[str | Path] = None,
+        **kwargs,
+    ) -> None:
+        from config import settings
+        path = model_path or settings.PLATE_MODEL_PATH
+        super().__init__(model_path=path, **kwargs)
 
 
 class VehicleDetector(YoloDetector):
