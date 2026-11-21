@@ -27,7 +27,7 @@ from src.database.repository import (
     get_camera,
     notify_realtime,
 )
-from src.utils.image_processing import crop_with_padding
+from src.utils.image_processing import crop_plate_roi
 from src.utils.plate_validator import format_vietnamese_plate, normalize_plate
 from src.utils.settings_store import load_settings
 
@@ -53,6 +53,10 @@ class CameraConnector:
         try:
             source = int(rtsp_url) if rtsp_url.isdigit() else rtsp_url
             cap = cv2.VideoCapture(source)
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:  # noqa: BLE001
+                pass
             if not cap.isOpened():
                 return False, f"Không thể kết nối tới Camera: {rtsp_url}"
 
@@ -71,12 +75,16 @@ class CameraConnector:
         try:
             source = int(rtsp_url) if rtsp_url.isdigit() else rtsp_url
             cap = cv2.VideoCapture(source)
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:  # noqa: BLE001
+                pass
             if not cap.isOpened():
                 return None
 
-            # Skip a few buffer frames to get the latest real-time frame
+            # Drain the capture buffer so we return the freshest frame (low latency).
             frame = None
-            for _ in range(3):
+            for _ in range(5):
                 ret, temp_frame = cap.read()
                 if ret and temp_frame is not None:
                     frame = temp_frame

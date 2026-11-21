@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
 from pathlib import Path
 from typing import Iterator, Optional
@@ -65,11 +66,26 @@ class StreamReader:
             )
 
     def _open_capture(self) -> cv2.VideoCapture:
-        source = self.source if isinstance(self.source, int) else str(self.source)
+        source = self.source
+        if isinstance(source, str) and str(source).strip().isdigit():
+            source = int(str(source).strip())
+        elif not isinstance(source, int):
+            source = str(source)
+
         capture = cv2.VideoCapture(source)
+        if not capture.isOpened() and sys.platform == "win32" and isinstance(source, int):
+            capture.release()
+            capture = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+
         if not capture.isOpened():
             capture.release()
             raise ValueError(f"Cannot open video source: {redact_source(source)}")
+        # Minimise the decoder/capture buffer so live display tracks the freshest
+        # frame instead of a queue of stale frames (reduces perceived latency).
+        try:
+            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:  # noqa: BLE001 - not every backend honours this
+            pass
         return capture
 
     def _read_metadata(self) -> None:

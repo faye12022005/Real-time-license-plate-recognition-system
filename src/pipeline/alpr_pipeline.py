@@ -44,6 +44,7 @@ from src.utils.plate_validator import (
     province_name,
 )
 from src.utils.source import camera_label, redact_source, safe_filename
+from src.utils.video_transcoder import create_browser_video_writer
 
 LOGGER = get_logger(__name__)
 
@@ -221,10 +222,9 @@ class ALPRPipeline:
         writer: Optional[cv2.VideoWriter] = None
         if save_annotated:
             output_video = output_path / f"{video_path.stem}_annotated.mp4"
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             size = (reader.width, reader.height)
-            writer = cv2.VideoWriter(str(output_video), fourcc, reader.fps, size)
-            if not writer.isOpened():
+            writer, used_codec = create_browser_video_writer(output_video, reader.fps, size)
+            if writer is None or not writer.isOpened():
                 LOGGER.warning("Could not open video writer for %s", output_video)
                 writer = None
                 output_video = None
@@ -356,6 +356,7 @@ class ALPRPipeline:
         stop_event: threading.Event | None = None,
         frame_callback: Callable[[np.ndarray], None] | None = None,
         record_callback: Callable[[list[PlateRecord]], None] | None = None,
+        stream_max_fps: float = 12.0,
     ) -> ProcessingResult:
         """Process a live camera/stream and emit plate records as they are confirmed.
 
@@ -421,6 +422,34 @@ class ALPRPipeline:
             reconnect_attempts,
         )
 
+        # Decouple display from inference: a background thread pushes the
+        # freshest frame to the MJPEG callback at a steady rate while the main
+        # loop keeps running detection/OCR.  This keeps the live view smooth
+        # even when inference is slow.
+        _display_frame: dict[str, Optional[np.ndarray]] = {"frame": None}
+        _display_lock = threading.Lock()
+        _display_stop = threading.Event()
+
+        def _display_worker() -> None:
+            interval = 1.0 / max(1.0, float(stream_max_fps))
+            while not _display_stop.is_set():
+                with _display_lock:
+                    frame = _display_frame["frame"]
+                if frame is not None and frame_callback is not None:
+                    try:
+                        frame_callback(frame)
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.debug("Frame callback failed: %s", exc)
+                _display_stop.wait(interval)
+
+        if frame_callback is not None:
+            _display_thread = threading.Thread(
+                target=_display_worker, name="camera-display", daemon=True
+            )
+            _display_thread.start()
+        else:
+            _display_thread = None
+
         reader.start()
         try:
             for frame_index, frame in enumerate(reader.frames()):
@@ -466,19 +495,18 @@ class ALPRPipeline:
                             ", ".join(record.plate_display for record in new_records),
                         )
 
+                # Publish the freshest frame (annotated when this frame was
+                # processed) to the display thread instead of encoding inline.
                 if frame_callback is not None:
-                    try:
-                        frame_callback(frame)
-                    except Exception as exc:  # noqa: BLE001 - streaming is best effort
-                        LOGGER.debug("Frame callback failed: %s", exc)
+                    with _display_lock:
+                        _display_frame["frame"] = frame
 
                 if save_annotated and writer is None and not writer_failed:
                     height, width = frame.shape[:2]
-                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    writer = cv2.VideoWriter(
-                        str(output_video), fourcc, reader.fps, (width, height)
+                    writer, used_codec = create_browser_video_writer(
+                        output_video, reader.fps, (width, height)
                     )
-                    if not writer.isOpened():
+                    if writer is None or not writer.isOpened():
                         LOGGER.warning(
                             "Could not open video writer for %s", output_video
                         )
@@ -514,6 +542,9 @@ class ALPRPipeline:
             stopped = True
             LOGGER.warning("Real-time camera interrupted by user.")
         finally:
+            _display_stop.set()
+            if _display_thread is not None:
+                _display_thread.join(timeout=2.0)
             reader.stop()
             if writer is not None:
                 writer.release()
@@ -925,7 +956,7 @@ class ALPRPipeline:
                     pts_ms=first_pts_ms,
                     video_time_str=format_seconds(first_seconds),
                     timestamp=datetime.now(timezone.utc).isoformat(),
-                    video_url=str(video_path),
+                    video_url="",
                     votes=total_votes,
                     source=best_state.source,
                 )

@@ -26,6 +26,7 @@ export interface CameraPlateRecord {
 export interface CameraSession {
   id: string;
   source: string;
+  source_raw?: string;
   label: string;
   status: "starting" | "running" | "stopping" | "stopped" | "completed" | "failed";
   error: string | null;
@@ -42,10 +43,48 @@ export interface CameraSession {
 export interface CameraStatusResponse {
   active: boolean;
   session: CameraSession | null;
+  sessions?: CameraSession[];
+  active_sources?: string[];
+}
+
+export interface CameraDevice {
+  id?: string;
+  index: number | string;
+  source?: string;
+  name?: string;
+  type?: "local" | "http" | "rtsp";
+  width: number;
+  height: number;
+  fps: number;
+  available: boolean;
+  previewing: boolean;
+  in_use: boolean;
+  is_configured?: boolean;
+}
+
+export interface CameraDiscoveryResponse {
+  devices: CameraDevice[];
+  configured_cameras?: CameraDevice[];
+  os_names: string[];
+  scanned_at: string;
+  max_index: number;
+  cached?: boolean;
+  ai_in_use?: number | null;
+}
+
+export interface CameraPreviewSession {
+  index: number;
+  status: string;
+  width: number;
+  height: number;
+  fps: number;
+  viewers: number;
+  error: string | null;
 }
 
 export interface StartCameraPayload {
-  source: string;
+  source?: string;
+  sources?: string[];
   camera_name?: string;
   min_votes?: number;
   max_frames?: number | null;
@@ -56,6 +95,15 @@ export interface StartCameraPayload {
   stream_max_fps?: number;
   ocr_mode?: "hybrid" | "easyocr" | "char";
   stride?: number;
+}
+
+export interface TestStreamResult {
+  ok: boolean;
+  connected: boolean;
+  width: number;
+  height: number;
+  fps: number;
+  message: string;
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -72,14 +120,42 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 export async function startCamera(
   payload: StartCameraPayload,
-): Promise<CameraSession> {
+): Promise<{ session: CameraSession; sessions?: CameraSession[] }> {
   const response = await fetch(`${CAMERA_BASE}/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const data = await parseResponse<{ session: CameraSession }>(response);
-  return data.session;
+  const data = await parseResponse<{ session: CameraSession; sessions?: CameraSession[] }>(
+    response
+  );
+  return data;
+}
+
+export async function syncActiveCameras(
+  payload: StartCameraPayload,
+): Promise<{ session: CameraSession | null; sessions: CameraSession[]; active_sources: string[] }> {
+  const response = await fetch(`${CAMERA_BASE}/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseResponse<{
+    session: CameraSession | null;
+    sessions: CameraSession[];
+    active_sources: string[];
+  }>(response);
+}
+
+export async function updateLiveCameraConfig(
+  payload: Partial<StartCameraPayload>,
+): Promise<{ ok: boolean; updated_sessions: number }> {
+  const response = await fetch(`${CAMERA_BASE}/update-config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseResponse<{ ok: boolean; updated_sessions: number }>(response);
 }
 
 export async function stopCamera(sessionId?: string): Promise<CameraSession | null> {
@@ -98,8 +174,116 @@ export async function getCameraStatus(): Promise<CameraStatusResponse> {
   return parseResponse<CameraStatusResponse>(response);
 }
 
-export function cameraStreamUrl(sessionId?: string): string {
-  return `${CAMERA_BASE}/stream${sessionId ? `?session_id=${sessionId}` : ""}`;
+export async function discoverCameras(
+  refresh = false,
+  maxIndex = 6,
+): Promise<CameraDiscoveryResponse> {
+  const params = new URLSearchParams({ max_index: String(maxIndex) });
+  if (refresh) params.set("refresh", "true");
+  const response = await fetch(`${CAMERA_BASE}/discover?${params}`, {
+    cache: "no-store",
+  });
+  return parseResponse<CameraDiscoveryResponse>(response);
+}
+
+export async function testCameraStream(
+  url: string,
+  timeoutSeconds = 6,
+): Promise<TestStreamResult> {
+  const response = await fetch(`${CAMERA_BASE}/test-stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, timeout_seconds: timeoutSeconds }),
+  });
+  return parseResponse<TestStreamResult>(response);
+}
+
+export async function getConfiguredCameras(): Promise<CameraDevice[]> {
+  const response = await fetch(`${CAMERA_BASE}/configured`, { cache: "no-store" });
+  const data = await parseResponse<{ cameras: any[] }>(response);
+  return (data.cameras || []).map((c) => ({
+    id: c.id,
+    index: c.id,
+    source: c.source || c.rtsp_url,
+    name: c.name,
+    type: (c.source || "").toLowerCase().startsWith("http") ? "http" : "rtsp",
+    width: parseInt((c.resolution || "0x0").split("x")[0], 10) || 0,
+    height: parseInt((c.resolution || "0x0").split("x")[1], 10) || 0,
+    fps: c.fps_limit || 25,
+    available: true,
+    previewing: false,
+    in_use: false,
+    is_configured: true,
+  }));
+}
+
+export async function addConfiguredCamera(payload: {
+  name: string;
+  source: string;
+  camera_type?: string;
+  location?: string;
+}): Promise<any> {
+  const response = await fetch(`${CAMERA_BASE}/configured`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseResponse<any>(response);
+}
+
+export async function deleteConfiguredCamera(id: string): Promise<boolean> {
+  const response = await fetch(`${CAMERA_BASE}/configured/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  const data = await parseResponse<{ ok: boolean }>(response);
+  return Boolean(data.ok);
+}
+
+export async function startCameraPreviews(
+  indices: number[],
+  options?: { maxFps?: number; jpegQuality?: number },
+): Promise<CameraPreviewSession[]> {
+  const response = await fetch(`${CAMERA_BASE}/previews`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      indices,
+      max_fps: options?.maxFps ?? 8,
+      jpeg_quality: options?.jpegQuality ?? 75,
+    }),
+  });
+  const data = await parseResponse<{ previews: CameraPreviewSession[] }>(response);
+  return data.previews;
+}
+
+export async function stopCameraPreviews(
+  indices?: number[] | null,
+  options?: { keepalive?: boolean },
+): Promise<number[]> {
+  const response = await fetch(`${CAMERA_BASE}/previews/stop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ indices: indices ?? null }),
+    keepalive: options?.keepalive ?? false,
+  });
+  const data = await parseResponse<{ stopped: number[] }>(response);
+  return data.stopped;
+}
+
+export function cameraPreviewStreamUrl(index: number | string): string {
+  return `${CAMERA_BASE}/previews/${index}/stream`;
+}
+
+export function cameraPreviewSnapshotUrl(index: number | string): string {
+  return `${CAMERA_BASE}/previews/${index}/snapshot`;
+}
+
+export function cameraStreamUrl(sourceOrSessionId?: string): string {
+  if (!sourceOrSessionId) return `${CAMERA_BASE}/stream`;
+  if (sourceOrSessionId.startsWith("cam-")) {
+    return `${CAMERA_BASE}/stream?session_id=${encodeURIComponent(sourceOrSessionId)}`;
+  }
+  return `${CAMERA_BASE}/stream?source=${encodeURIComponent(sourceOrSessionId)}`;
 }
 
 export function mediaUrl(path?: string): string {

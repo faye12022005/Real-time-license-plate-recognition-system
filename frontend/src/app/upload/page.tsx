@@ -150,15 +150,17 @@ export default function UploadPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="font-heading font-black text-2xl text-content-primary tracking-tight">
-          Upload & Xử lý
-        </h1>
-        <p className="text-xs text-content-muted mt-1">
-          Tải lên video camera giao thông để hệ thống tự động bóc tách tất cả biển số xe và nạp vào cơ sở dữ liệu
-        </p>
-      </div>
+      {/* Header cố định ở trên, không di chuyển khi cuộn */}
+      <header className="sticky top-0 z-30 -mx-4 lg:-mx-6 px-4 lg:px-6 bg-background/95 backdrop-blur-md pt-4 lg:pt-6 pb-3.5 border-b border-border/60">
+        <div>
+          <h1 className="font-heading font-black text-2xl text-content-primary tracking-tight">
+            Upload & Xử lý
+          </h1>
+          <p className="text-xs text-content-muted mt-1">
+            Tải lên video camera giao thông để hệ thống tự động bóc tách tất cả biển số xe và nạp vào cơ sở dữ liệu
+          </p>
+        </div>
+      </header>
 
       {/* Multi-file Upload Queue Zone */}
       <div className="bg-surface border border-border rounded-bento p-6 shadow-bento space-y-3">

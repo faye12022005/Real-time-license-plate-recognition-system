@@ -12,6 +12,7 @@ interface VideoEvidenceModalProps {
 }
 
 export function VideoEvidenceModal({ record, onClose }: VideoEvidenceModalProps) {
+  const [videoError, setVideoError] = React.useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Đóng modal khi bấm phím Escape
@@ -22,6 +23,10 @@ export function VideoEvidenceModal({ record, onClose }: VideoEvidenceModalProps)
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    setVideoError(null);
+  }, [record?.id]);
 
   if (!record) return null;
 
@@ -65,7 +70,7 @@ export function VideoEvidenceModal({ record, onClose }: VideoEvidenceModalProps)
 
         {/* Video Player with dynamic source and Auto-Seek to Event */}
         <div className="relative aspect-video rounded-xl overflow-hidden bg-slate-900 border border-slate-700 flex items-center justify-center group">
-          {videoSrc ? (
+          {videoSrc && !videoError ? (
             <video
               ref={videoRef}
               controls
@@ -74,6 +79,9 @@ export function VideoEvidenceModal({ record, onClose }: VideoEvidenceModalProps)
               playsInline
               className="w-full h-full object-contain"
               src={videoSrc}
+              onError={() => {
+                setVideoError("Trình duyệt không thể giải mã tệp video bằng chứng này.");
+              }}
               onLoadedMetadata={() => {
                 if (videoRef.current) {
                   // Tự động tua đến trước mốc sự kiện 1 giây
@@ -81,6 +89,20 @@ export function VideoEvidenceModal({ record, onClose }: VideoEvidenceModalProps)
                 }
               }}
             />
+          ) : videoError ? (
+            <div className="flex flex-col items-center gap-3 px-6 text-center text-slate-300">
+              <Film className="w-8 h-8 text-amber-500" />
+              <p className="text-xs font-semibold">{videoError}</p>
+              {videoSrc && (
+                <a
+                  href={videoSrc}
+                  download
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-lg transition-colors"
+                >
+                  Tải video bằng chứng về máy
+                </a>
+              )}
+            </div>
           ) : (
             <div className="flex flex-col items-center gap-2 px-6 text-center text-slate-400">
               <Film className="w-8 h-8 text-slate-600" />

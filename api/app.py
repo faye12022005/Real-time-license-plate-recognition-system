@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from config import settings
 from config.settings import CAPTURES_DIR, PARKING_DIR, OUTPUT_DIR
 from src.database.connection import init_db
+from src.utils.video_transcoder import ensure_h264_dll
 from api.realtime import realtime_manager
 from api.routes.analytics import router as analytics_router
 from api.routes.camera import router as camera_router
@@ -103,6 +104,7 @@ async def lifespan(app: FastAPI):
     realtime_manager.set_loop(asyncio.get_running_loop())
     settings.ensure_directories()
     init_db()
+    ensure_h264_dll()
     cleanup_task = asyncio.create_task(_auto_cleanup_loop())
     try:
         yield
@@ -112,6 +114,11 @@ async def lifespan(app: FastAPI):
             await cleanup_task
         except asyncio.CancelledError:
             pass
+
+        # Release webcams held by view-only previews before the process exits.
+        from api.camera_preview import preview_manager
+
+        preview_manager.stop_all(wait=False)
 
 
 def create_app() -> FastAPI:

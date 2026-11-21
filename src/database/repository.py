@@ -646,6 +646,7 @@ def get_parking_dashboard_stats() -> dict[str, Any]:
             row = cursor.fetchone() or {}
     currently_parked = int(row.get("currently_parked") or 0)
     total_registered_residents = int(row.get("total_registered_residents") or 0)
+    recent_sessions = list_parking_sessions(limit=10)
     return {
         "currently_parked": currently_parked,
         "resident_parked": int(row.get("resident_parked") or 0),
@@ -656,6 +657,7 @@ def get_parking_dashboard_stats() -> dict[str, Any]:
         "total_registered_residents": total_registered_residents,
         "total_cameras": int(row.get("total_cameras") or 0),
         "active_cameras": int(row.get("active_cameras") or 0),
+        "recent_sessions": recent_sessions,
         # Backward-compatible aliases for older consumers.
         "total_parked": currently_parked,
         "total_residents": total_registered_residents,

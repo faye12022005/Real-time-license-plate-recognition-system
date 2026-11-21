@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { alprApi } from "@/lib/api";
 import {
   AISettings,
@@ -190,8 +191,15 @@ function SectionHeader({
   );
 }
 
-export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("parking");
+function SettingsContent() {
+  const searchParams = useSearchParams();
+  const tabParam = searchParams ? (searchParams.get("tab") as SettingsTab | null) : null;
+  const activeTab: SettingsTab =
+    tabParam && ["parking", "ai", "security", "storage", "system"].includes(tabParam)
+      ? tabParam
+      : "parking";
+  const currentTabMeta = TABS.find((t) => t.id === activeTab) || TABS[0];
+  const CurrentIcon = currentTabMeta.icon;
   const [settings, setSettings] = useState<SystemSettings>(FALLBACK_SETTINGS);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const [blacklistText, setBlacklistText] = useState("");
@@ -396,34 +404,43 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-5 pb-10">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="flex items-center gap-2 font-heading text-2xl font-black tracking-tight text-content-primary">
-            <SlidersHorizontal className="h-6 w-6 text-primary" />
-            Cấu hình hệ thống
-          </h1>
-          <p className="mt-1 text-xs text-content-muted">
-            Bảng giá bãi xe, ngưỡng AI, an ninh, lưu trữ và thông tin tòa nhà.
-          </p>
-        </div>
+      {/* Header cố định ở trên, không di chuyển khi cuộn */}
+      <header className="sticky top-0 z-30 -mx-4 lg:-mx-6 px-4 lg:px-6 bg-background/95 backdrop-blur-md pt-4 lg:pt-6 pb-3.5 border-b border-border/60">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2.5">
+              <h1 className="flex items-center gap-2 font-heading text-2xl font-black tracking-tight text-content-primary">
+                <SlidersHorizontal className="h-6 w-6 text-primary" />
+                Cấu hình hệ thống
+              </h1>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-primary-border bg-primary-light px-3 py-1 text-xs font-bold text-primary">
+                <CurrentIcon className="h-3.5 w-3.5" />
+                {currentTabMeta.label}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-content-muted">
+              Bảng giá bãi xe, ngưỡng AI, an ninh, lưu trữ và thông tin tòa nhà.
+            </p>
+          </div>
 
-        <div className="flex items-center gap-2">
-          {isDirty ? (
-            <span className="rounded-full border border-status-warning/30 bg-status-warning/10 px-2.5 py-1 text-[10px] font-bold text-status-warning">
-              Có thay đổi chưa lưu
-            </span>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => void persist()}
-            disabled={isSaving || isLoading}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            Lưu cấu hình
-          </button>
+          <div className="flex items-center gap-2">
+            {isDirty ? (
+              <span className="rounded-full border border-status-warning/30 bg-status-warning/10 px-2.5 py-1 text-[10px] font-bold text-status-warning">
+                Có thay đổi chưa lưu
+              </span>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void persist()}
+              disabled={isSaving || isLoading}
+              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60 shadow-sm"
+            >
+              {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Lưu cấu hình
+            </button>
+          </div>
         </div>
-      </div>
+      </header>
 
       {notice ? (
         <div
@@ -442,30 +459,7 @@ export default function SettingsPage() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="h-fit rounded-bento border border-border bg-surface p-2 shadow-bento lg:sticky lg:top-4">
-          {TABS.map((tab) => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition-colors ${
-                  active
-                    ? "border border-primary-border bg-primary-light text-primary"
-                    : "text-content-secondary hover:bg-surface-muted hover:text-content-primary"
-                }`}
-              >
-                <Icon className={`h-4 w-4 ${active ? "text-primary" : "text-content-muted"}`} />
-                {tab.label}
-              </button>
-            );
-          })}
-        </aside>
-
-        <main className="min-w-0 space-y-5">
+      <div className="w-full space-y-5">
           {isLoading ? (
             <div className="flex items-center justify-center gap-2 rounded-bento border border-border bg-surface p-12 text-xs text-content-muted shadow-bento">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -1088,8 +1082,22 @@ export default function SettingsPage() {
               </div>
             </section>
           ) : null}
-        </main>
       </div>
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center p-12 text-xs text-content-muted">
+          <Loader2 className="h-5 w-5 animate-spin text-primary mr-2" />
+          Đang tải cấu hình hệ thống...
+        </div>
+      }
+    >
+      <SettingsContent />
+    </Suspense>
   );
 }

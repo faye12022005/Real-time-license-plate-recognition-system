@@ -64,6 +64,26 @@ export function DashboardLiveView({ initialKpis, initialPlates }: DashboardLiveV
 
   return (
     <div className="space-y-6">
+      {/* Header cố định ở trên, không di chuyển khi cuộn */}
+      <header className="sticky top-0 z-30 -mx-4 lg:-mx-6 px-4 lg:px-6 bg-background/95 backdrop-blur-md pt-4 lg:pt-6 pb-3.5 border-b border-border/60">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="font-heading font-black text-2xl tracking-tight text-content-primary">
+                Tổng quan hệ thống
+              </h1>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Live Bento
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs text-content-muted">
+              Chung cư Sunrise City — Tháp A · Giám sát AI thời gian thực & chỉ số vận hành bãi xe
+            </p>
+          </div>
+        </div>
+      </header>
+
       {/* 0. Cảnh báo sức chứa bãi xe (Cấu hình tại /settings) */}
       <ParkingCapacityBanner />
 

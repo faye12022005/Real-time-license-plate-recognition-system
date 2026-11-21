@@ -232,26 +232,28 @@ export default function CamerasPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
-        <div>
-          <h1 className="font-heading font-black text-2xl text-content-primary tracking-tight">
-            Camera Giám sát
-          </h1>
-          <p className="text-xs text-content-muted mt-1">
-            Kết nối và quản lý luồng RTSP / Webcam tại các làn xe vào – ra của bãi xe
-          </p>
-        </div>
+      {/* Header cố định ở trên, không di chuyển khi cuộn */}
+      <header className="sticky top-0 z-30 -mx-4 lg:-mx-6 px-4 lg:px-6 bg-background/95 backdrop-blur-md pt-4 lg:pt-6 pb-3.5 border-b border-border/60">
+        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+          <div>
+            <h1 className="font-heading font-black text-2xl text-content-primary tracking-tight">
+              Camera Giám sát
+            </h1>
+            <p className="text-xs text-content-muted mt-1">
+              Kết nối và quản lý luồng RTSP / Webcam tại các làn xe vào – ra của bãi xe
+            </p>
+          </div>
 
-        <button
-          type="button"
-          onClick={openCreateForm}
-          className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-xl shadow-xs transition-all hover:scale-[1.02] shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Thêm Camera</span>
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={openCreateForm}
+            className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-xl shadow-xs transition-all hover:scale-[1.02] shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Thêm Camera</span>
+          </button>
+        </div>
+      </header>
 
       {/* Notice */}
       {notice && (

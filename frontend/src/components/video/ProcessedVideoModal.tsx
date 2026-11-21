@@ -29,6 +29,7 @@ export function ProcessedVideoModal({ job, onClose }: ProcessedVideoModalProps) 
   const [activeSource, setActiveSource] = useState<"processed" | "raw">("processed");
   const [selectedPlateId, setSelectedPlateId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [videoError, setVideoError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Đóng modal khi bấm phím Escape
@@ -39,6 +40,11 @@ export function ProcessedVideoModal({ job, onClose }: ProcessedVideoModalProps) 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
+
+  // Reset lỗi khi đổi nguồn phát
+  useEffect(() => {
+    setVideoError(null);
+  }, [activeSource, job?.id]);
 
   // Tải danh sách biển số phát hiện trong video này
   useEffect(() => {
@@ -183,7 +189,7 @@ export function ProcessedVideoModal({ job, onClose }: ProcessedVideoModalProps) 
 
             {/* Khung phát Video HTML5 */}
             <div className="relative aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-800 flex items-center justify-center shadow-inner group">
-              {currentVideoSrc ? (
+              {currentVideoSrc && !videoError ? (
                 <video
                   ref={videoRef}
                   key={currentVideoSrc}
@@ -191,8 +197,46 @@ export function ProcessedVideoModal({ job, onClose }: ProcessedVideoModalProps) 
                   autoPlay
                   playsInline
                   className="w-full h-full object-contain"
-                  src={currentVideoSrc}
-                />
+                  onError={() => {
+                    setVideoError(
+                      activeSource === "processed"
+                        ? "Trình duyệt không thể giải mã trực tiếp video AI này (hoặc luồng đang kết xuất). Bạn có thể bấm nút bên dưới để chuyển sang xem Video Gốc."
+                        : "Không thể phát tệp video này trên trình duyệt."
+                    );
+                  }}
+                >
+                  <source src={currentVideoSrc} type="video/mp4" />
+                  Trình duyệt không hỗ trợ phát thẻ video HTML5.
+                </video>
+              ) : videoError ? (
+                <div className="flex flex-col items-center gap-3 text-slate-300 p-6 text-center max-w-md">
+                  <AlertCircle className="w-10 h-10 text-amber-500" />
+                  <p className="text-xs font-semibold leading-relaxed text-slate-300">{videoError}</p>
+                  <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+                    {activeSource === "processed" && rawVideoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVideoError(null);
+                          setActiveSource("raw");
+                        }}
+                        className="px-3 py-1.5 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg shadow-xs transition-colors"
+                      >
+                        Chuyển sang Video Gốc
+                      </button>
+                    )}
+                    {currentVideoSrc && (
+                      <a
+                        href={currentVideoSrc}
+                        download
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Tải Video về máy</span>
+                      </a>
+                    )}
+                  </div>
+                </div>
               ) : (
                 <div className="flex flex-col items-center gap-2 text-slate-400 p-6 text-center">
                   <AlertCircle className="w-8 h-8 text-slate-600" />

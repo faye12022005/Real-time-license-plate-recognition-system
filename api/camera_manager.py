@@ -34,7 +34,7 @@ class CameraStartOptions:
     stream_max_fps: float = 12.0
     jpeg_quality: int = 80
     ocr_mode: str = "char"
-    stride: int = 1
+    stride: int = 2
 
 
 class CameraSession:
@@ -44,6 +44,7 @@ class CameraSession:
         self.id = f"cam-{uuid.uuid4().hex[:10]}"
         self.options = options
         self.source = parse_camera_source(options.source)
+        self.source_str = str(options.source).strip()
         self.label = camera_label(self.source, options.camera_name)
         self.output_dir = settings.OUTPUT_DIR / f"camera_web_{self.id}"
         self.status = "starting"
@@ -58,6 +59,7 @@ class CameraSession:
         self._fps = 0.0
         self._last_frame_at = 0.0
         self._last_encode_at = 0.0
+        self.pipeline: Any = None
 
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
@@ -90,6 +92,7 @@ class CameraSession:
                 min_votes=self.options.min_votes,
                 save_crops=True,
             )
+            self.pipeline = pipeline
             with self._condition:
                 if self.status == "starting":
                     self.status = "running"
@@ -108,6 +111,7 @@ class CameraSession:
                 stop_event=self._stop_event,
                 frame_callback=self._on_frame,
                 record_callback=self._on_records,
+                stream_max_fps=self.options.stream_max_fps,
             )
             with self._condition:
                 self.result = result
@@ -207,6 +211,7 @@ class CameraSession:
         return {
             "id": self.id,
             "source": redact_source(self.source),
+            "source_raw": self.source_str,
             "label": self.label,
             "status": status,
             "error": self.error,
@@ -226,37 +231,179 @@ class CameraSession:
             "records": self.records(),
         }
 
+    def update_config(self, **kwargs) -> None:
+        """Dynamically update options and pipeline parameters live."""
+        for k, v in kwargs.items():
+            if v is not None and hasattr(self.options, k):
+                setattr(self.options, k, v)
+        pipeline = getattr(self, "pipeline", None)
+        if pipeline is not None:
+            if "stride" in kwargs and kwargs["stride"] is not None:
+                pipeline.stride = max(1, int(kwargs["stride"]))
+            if "min_votes" in kwargs and kwargs["min_votes"] is not None:
+                pipeline.min_votes = max(1, int(kwargs["min_votes"]))
+            if "ocr_mode" in kwargs and kwargs["ocr_mode"] is not None:
+                mode = str(kwargs["ocr_mode"])
+                if mode != getattr(pipeline, "ocr_mode", ""):
+                    try:
+                        from src.core.ocr import PlateOCR
+                        pipeline.ocr_mode = mode
+                        pipeline.ocr = PlateOCR(mode=mode)
+                    except Exception:
+                        pass
+
 
 class CameraManager:
-    """Keep a single live camera session for the dashboard."""
+    """Manages active live camera sessions (single or multiple) for the dashboard."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._current: CameraSession | None = None
+        self._sessions: dict[str, CameraSession] = {}
+        self._primary_id: str | None = None
 
     @property
     def current(self) -> CameraSession | None:
         with self._lock:
-            return self._current
+            if self._primary_id and self._primary_id in self._sessions:
+                return self._sessions[self._primary_id]
+            for s in self._sessions.values():
+                if s.status not in TERMINAL_STATES:
+                    return s
+            return next(iter(self._sessions.values())) if self._sessions else None
+
+    def get(self, key: str) -> CameraSession | None:
+        with self._lock:
+            if key in self._sessions:
+                return self._sessions[key]
+            for s in self._sessions.values():
+                if str(s.source) == str(key) or getattr(s, "source_str", "") == str(key):
+                    return s
+            return None
+
+    def list_sessions(self) -> list[CameraSession]:
+        with self._lock:
+            return list(self._sessions.values())
+
+    def active_sessions(self) -> list[CameraSession]:
+        with self._lock:
+            return [s for s in self._sessions.values() if s.status not in TERMINAL_STATES]
 
     def start(self, options: CameraStartOptions) -> CameraSession:
-        with self._lock:
-            previous = self._current
-        if previous is not None:
-            previous.stop(wait=True, timeout=10.0)
+        return self.start_many([options])[0]
 
-        session = CameraSession(options)
+    def start_many(self, options_list: list[CameraStartOptions]) -> list[CameraSession]:
+        self.stop_all(wait=True, timeout=5.0)
+
+        started: list[CameraSession] = []
         with self._lock:
-            self._current = session
-        session.start()
-        return session
+            self._sessions.clear()
+            self._primary_id = None
+            for opt in options_list:
+                session = CameraSession(opt)
+                self._sessions[session.id] = session
+                if self._primary_id is None:
+                    self._primary_id = session.id
+                started.append(session)
+
+        for session in started:
+            session.start()
+
+        return started
+
+    def sync_sources(
+        self, sources: list[str], options_template: CameraStartOptions
+    ) -> list[CameraSession]:
+        """Dynamically sync running camera sessions with selected sources."""
+        clean_sources = [str(s).strip() for s in sources if str(s).strip()]
+        target_set = set(clean_sources)
+
+        new_sessions: list[CameraSession] = []
+        with self._lock:
+            # 1. Stop sessions no longer in target_set
+            to_remove = [
+                sid
+                for sid, s in self._sessions.items()
+                if s.source_str not in target_set
+                or s.status in TERMINAL_STATES
+            ]
+            for sid in to_remove:
+                s = self._sessions.pop(sid)
+                s.stop(wait=False)
+
+            # 2. Existing active sources
+            existing_sources = {
+                s.source_str
+                for s in self._sessions.values()
+                if s.status not in TERMINAL_STATES
+            }
+
+            # 3. Add sessions for newly checked sources
+            for src in clean_sources:
+                if src not in existing_sources:
+                    opt = CameraStartOptions(
+                        source=src,
+                        camera_name=options_template.camera_name,
+                        min_votes=options_template.min_votes,
+                        max_frames=options_template.max_frames,
+                        duration_seconds=options_template.duration_seconds,
+                        reconnect_attempts=options_template.reconnect_attempts,
+                        save_db=options_template.save_db,
+                        save_video=options_template.save_video,
+                        stream_max_fps=options_template.stream_max_fps,
+                        ocr_mode=options_template.ocr_mode,
+                        stride=options_template.stride,
+                    )
+                    session = CameraSession(opt)
+                    self._sessions[session.id] = session
+                    new_sessions.append(session)
+
+            if not self._primary_id or self._primary_id not in self._sessions:
+                self._primary_id = (
+                    next(iter(self._sessions.keys())) if self._sessions else None
+                )
+
+        # Start newly created sessions
+        for s in new_sessions:
+            s.start()
+
+        return self.list_sessions()
+
+    def update_config(self, **kwargs) -> dict:
+        """Update options for all running sessions in real-time."""
+        with self._lock:
+            sessions = list(self._sessions.values())
+        for session in sessions:
+            session.update_config(**kwargs)
+        return {"ok": True, "updated_sessions": len(sessions)}
 
     def stop(self, session_id: str | None = None) -> CameraSession | None:
+        if session_id is None:
+            stopped = self.stop_all()
+            return stopped[0] if stopped else None
         with self._lock:
-            session = self._current
+            session = self._sessions.get(session_id)
         if session is None:
             return None
-        if session_id and session.id != session_id:
-            raise KeyError(session_id)
-        session.stop(wait=True, timeout=10.0)
+        session.stop(wait=True, timeout=5.0)
         return session
+
+    def stop_all(self, wait: bool = True, timeout: float = 5.0) -> list[CameraSession]:
+        with self._lock:
+            sessions = list(self._sessions.values())
+        for session in sessions:
+            session.stop(wait=wait, timeout=timeout)
+        return sessions
+
+    def records(self) -> list[dict]:
+        with self._lock:
+            sessions = list(self._sessions.values())
+        all_records = []
+        seen = set()
+        for session in sessions:
+            for rec in session.records():
+                rec_id = rec.get("id") or f"{rec.get('plate_number')}_{rec.get('pts_ms')}"
+                if rec_id not in seen:
+                    seen.add(rec_id)
+                    all_records.append(rec)
+        all_records.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+        return all_records

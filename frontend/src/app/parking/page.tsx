@@ -261,57 +261,59 @@ export default function ParkingManagementPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="font-heading font-black text-2xl text-content-primary tracking-tight flex items-center gap-2">
-            <Car className="w-7 h-7 text-primary" />
-            <span>Quản lý Bãi Xe Chung Cư</span>
-          </h1>
-          <p className="text-xs text-content-muted mt-1">
-            Ghi nhận xe ra/vào, chụp ảnh biển số tự động, đối soát vé tháng cư dân và tính cước phí minh bạch
-          </p>
+      {/* Header cố định ở trên, không di chuyển khi cuộn */}
+      <header className="sticky top-0 z-30 -mx-4 lg:-mx-6 px-4 lg:px-6 bg-background/95 backdrop-blur-md pt-4 lg:pt-6 pb-3.5 border-b border-border/60">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="font-heading font-black text-2xl text-content-primary tracking-tight flex items-center gap-2">
+              <Car className="w-7 h-7 text-primary" />
+              <span>Quản lý Bãi Xe Chung Cư</span>
+            </h1>
+            <p className="text-xs text-content-muted mt-1">
+              Ghi nhận xe ra/vào, chụp ảnh biển số tự động, đối soát vé tháng cư dân và tính cước phí minh bạch
+            </p>
+          </div>
+
+          {/* Nút tác vụ Check-in / Check-out */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setCheckInError(null);
+                setShowCheckInModal(true);
+              }}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all hover:scale-[1.02]"
+            >
+              <LogIn className="w-4 h-4" />
+              <span>Xe Vào Bãi (Check-in)</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setCheckOutSessionId("");
+                setCheckOutPlate("");
+                setCheckOutFile(null);
+                setCheckOutPreview(null);
+                setCheckOutError(null);
+                setCheckOutSuccessResult(null);
+                setShowCheckOutModal(true);
+              }}
+              className="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all hover:scale-[1.02]"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Xe Ra Bãi (Check-out)</span>
+            </button>
+
+            <button
+              onClick={loadData}
+              disabled={isLoading}
+              className="p-2 rounded-xl bg-surface border border-border text-content-secondary hover:text-content-primary hover:bg-surface-muted transition-colors"
+              title="Làm mới dữ liệu"
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin text-primary" : ""}`} />
+            </button>
+          </div>
         </div>
-
-        {/* Nút tác vụ Check-in / Check-out */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              setCheckInError(null);
-              setShowCheckInModal(true);
-            }}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all hover:scale-[1.02]"
-          >
-            <LogIn className="w-4 h-4" />
-            <span>Xe Vào Bãi (Check-in)</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setCheckOutSessionId("");
-              setCheckOutPlate("");
-              setCheckOutFile(null);
-              setCheckOutPreview(null);
-              setCheckOutError(null);
-              setCheckOutSuccessResult(null);
-              setShowCheckOutModal(true);
-            }}
-            className="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all hover:scale-[1.02]"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Xe Ra Bãi (Check-out)</span>
-          </button>
-
-          <button
-            onClick={loadData}
-            disabled={isLoading}
-            className="p-2 rounded-xl bg-surface border border-border text-content-secondary hover:text-content-primary hover:bg-surface-muted transition-colors"
-            title="Làm mới dữ liệu"
-          >
-            <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin text-primary" : ""}`} />
-          </button>
-        </div>
-      </div>
+      </header>
 
       {/* Cảnh báo an ninh realtime (danh sách đen / lệch biển số) */}
       {securityAlert && (

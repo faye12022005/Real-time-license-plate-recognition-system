@@ -366,6 +366,53 @@ function TraceContent() {
     setPage(1);
   };
 
+  // Tối ưu UX bộ lọc: tự động áp dụng sau debounce 0.3s cho text/select,
+  // áp dụng ngay khi đã chọn đủ ngày/giờ bắt đầu & kết thúc.
+  const previousDraftRef = useRef<TraceFilters>(draftFilters);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const previous = previousDraftRef.current;
+    const datesChanged =
+      previous.from !== draftFilters.from || previous.to !== draftFilters.to;
+    const datesComplete =
+      (draftFilters.from === "" && draftFilters.to === "") ||
+      (draftFilters.from !== "" && draftFilters.to !== "");
+
+    previousDraftRef.current = draftFilters;
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
+    const apply = () => {
+      setAppliedFilters({ ...draftFilters });
+      setActiveId(null);
+      setPage(1);
+    };
+
+    if (datesChanged && datesComplete) {
+      // Đủ ngày/giờ → tìm kiếm ngay
+      apply();
+      return;
+    }
+
+    if (datesChanged && !datesComplete) {
+      // Chưa đủ ngày/giờ → chưa áp dụng
+      return;
+    }
+
+    // Text/select thay đổi → debounce 0.3s
+    debounceTimerRef.current = setTimeout(apply, 300);
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+    };
+  }, [draftFilters]);
+
   const resetFilters = () => {
     setDraftFilters({ ...EMPTY_FILTERS });
     setAppliedFilters({ ...EMPTY_FILTERS });
@@ -418,23 +465,25 @@ function TraceContent() {
   };
 
   return (
-    <div className="flex h-auto flex-col gap-2 min-[960px]:h-[calc(100vh-4.8rem)] min-[960px]:overflow-hidden">
-      {/* Page heading */}
-      <div className="flex shrink-0 items-center justify-between gap-3 px-1">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary-light text-primary border border-primary-border">
-            <ScanLine className="h-4 w-4" />
-          </div>
-          <div>
-            <h1 className="font-heading text-lg font-black tracking-tight text-content-primary leading-none">
-              Truy vết biển số xe
-            </h1>
-            <p className="text-[11px] text-content-muted mt-0.5">
-              Rà soát ảnh chụp và video bằng chứng theo thời gian, kênh camera và biển số
-            </p>
+    <div className="flex h-auto flex-col gap-3 min-[960px]:h-[calc(100vh-2rem)] min-[960px]:overflow-hidden">
+      {/* Header cố định ở trên, không di chuyển khi cuộn */}
+      <header className="sticky top-0 z-30 shrink-0 -mx-4 lg:-mx-6 px-4 lg:px-6 bg-background/95 backdrop-blur-md pt-4 lg:pt-6 pb-3 border-b border-border/60">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-light text-primary border border-primary-border">
+              <ScanLine className="h-4 w-4" />
+            </div>
+            <div>
+              <h1 className="font-heading text-lg font-black tracking-tight text-content-primary leading-none">
+                Truy vết biển số xe
+              </h1>
+              <p className="text-[11px] text-content-muted mt-0.5">
+                Rà soát ảnh chụp và video bằng chứng theo thời gian, kênh camera và biển số
+              </p>
+            </div>
           </div>
         </div>
-      </div>
+      </header>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-xl shadow-slate-200/60">
         <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden min-[960px]:flex-row">
