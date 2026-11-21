@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import time
 import uuid
 import shutil
 from pathlib import Path
@@ -116,13 +117,99 @@ def get_job_records(job_id: str) -> list[dict]:
     return records
 
 
-def _uploaded_path(job: dict) -> Path | None:
-    url = media_url(job.get("video_url"))
-    prefix = "/static/uploads/"
-    if not url.startswith(prefix):
+def _managed_path(url: str | None, prefix: str, root: Path) -> Path | None:
+    """Resolve a stored media URL to a path inside its mounted directory."""
+    normalized = media_url(url)
+    if not normalized.startswith(prefix):
         return None
-    path = (settings.UPLOAD_DIR / url[len(prefix):]).resolve()
-    return path if path.is_relative_to(settings.UPLOAD_DIR.resolve()) else None
+    path = (root / normalized[len(prefix):]).resolve()
+    return path if path.is_relative_to(root.resolve()) else None
+
+
+def _media_path(url: str | None) -> Path | None:
+    for prefix, root in (
+        ("/static/uploads/", settings.UPLOAD_DIR),
+        ("/media/", settings.OUTPUT_DIR),
+        ("/static/videos/", settings.SAMPLES_DIR),
+        ("/static/captures/", settings.CAPTURES_DIR),
+        ("/static/parking/", settings.PARKING_DIR),
+    ):
+        path = _managed_path(url, prefix, root)
+        if path is not None:
+            return path
+    return None
+
+
+def _uploaded_path(job: dict) -> Path | None:
+    return _managed_path(job.get("video_url"), "/static/uploads/", settings.UPLOAD_DIR)
+
+
+def _is_job_owned(path: Path, job_id: str) -> bool:
+    """Only delete media that belongs to this job, never shared sample files."""
+    for root in (settings.OUTPUT_DIR, settings.CAPTURES_DIR, settings.PARKING_DIR):
+        job_dir = (root / job_id).resolve()
+        job_upload_dir = (root / f"upload_{job_id}").resolve()
+        if path == job_dir or path.is_relative_to(job_dir):
+            return True
+        if path == job_upload_dir or path.is_relative_to(job_upload_dir):
+            return True
+    # Legacy annotated outputs are named after the job id.
+    return job_id in path.name
+
+
+def _job_artifact_paths(job_id: str, job: dict) -> list[Path]:
+    """Return every file or directory that belongs to a deleted video job."""
+    paths: list[Path] = []
+
+    uploaded = _uploaded_path(job)
+    if uploaded is not None:
+        paths.append(uploaded)
+
+    # Current upload pipeline output: output/upload_<job_id>/...
+    output = (settings.OUTPUT_DIR / f"upload_{job_id}").resolve()
+    if output.parent == settings.OUTPUT_DIR.resolve():
+        paths.append(output)
+
+    # Legacy/default pipeline output: output/<video_stem>_<job_id>/...
+    stem = Path(job.get("filename") or "").stem
+    if stem and stem not in {".", ".."}:
+        legacy_output = (settings.OUTPUT_DIR / f"{stem}_{job_id}").resolve()
+        if legacy_output.parent == settings.OUTPUT_DIR.resolve():
+            paths.append(legacy_output)
+
+    # Older jobs stored the annotated result under data/sample_videos.
+    processed = _media_path(job.get("processed_video_url"))
+    if processed is not None and _is_job_owned(processed, job_id):
+        paths.append(processed)
+
+    # Per-job capture directories, if an older pipeline created them.
+    for root in (settings.CAPTURES_DIR, settings.PARKING_DIR):
+        captures = (root / job_id).resolve()
+        if captures.parent == root.resolve():
+            paths.append(captures)
+
+    return paths
+
+
+def _remove_path(path: Path, errors: list[str]) -> None:
+    """Delete a file/directory, retrying briefly for Windows file locks."""
+    if not path.exists() and not path.is_symlink():
+        return
+    last_error: OSError | None = None
+    for attempt in range(3):
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.15)
+    errors.append(f"{path.name}: {last_error}")
 
 
 class DeleteJobsRequest(BaseModel):
@@ -139,14 +226,19 @@ def _delete_jobs(job_ids: list[str]) -> int:
     for job_id, job in jobs.items():
         if job is None:
             continue
+
+        # Remove owned media before the DB row so a locked file does not leave
+        # an orphan behind. A failed deletion keeps the row for a clean retry.
+        errors: list[str] = []
+        for path in _job_artifact_paths(job_id, job):
+            _remove_path(path, errors)
+        if errors:
+            raise HTTPException(
+                status_code=500,
+                detail="Không thể xóa tệp video: " + "; ".join(errors),
+            )
+
         delete_video_job(job_id)
-        path = _uploaded_path(job)
-        if path:
-            path.unlink(missing_ok=True)
-        # Only the per-job managed output directory belongs to this upload.
-        output = (settings.OUTPUT_DIR / f"upload_{job_id}").resolve()
-        if output.parent == settings.OUTPUT_DIR.resolve() and output.is_dir():
-            shutil.rmtree(output)
         notify_realtime("video_job_deleted", {"job_id": job_id})
         deleted += 1
     if deleted:
